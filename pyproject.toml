@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paper-search"
+version = "0.1.0"
+description = "Offline minimal loop for academic paper search"
+readme = "README-参考.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+paper-search = "paper_search.cli:main"
+paper-search-web = "paper_search.web:main"
+
+[tool.setuptools.packages.find]
+include = ["paper_search*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

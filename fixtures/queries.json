@@ -1,0 +1,17 @@
+{
+  "dataset": "golden_set_v1",
+  "queries": [
+    "2022年后关于大模型幻觉控制、使用强化学习方法、在CVPR发表的论文",
+    "2023年发表在CVPR、关于object hallucination、使用强化学习的论文",
+    "论文《SPAR: Multi-Agent Scientific Paper Retrieval》讲了什么？",
+    "2024年CVPR关于tool use降低hallucination的论文",
+    "Alice Zhang在CVPR发表的object hallucination论文",
+    "2024年关于preference alignment控制多模态幻觉的CVPR论文",
+    "多智能体论文搜索系统SPAR是哪篇论文？",
+    "PaperQA2 是什么论文？",
+    "2024年EMNLP关于scientific literature QA的论文",
+    "关于vision-language model hallucination control的CVPR论文",
+    "2024年CVPR关于reinforcement signals用于多模态偏好对齐的论文",
+    "使用tool use和强化学习降低多模态幻觉的论文"
+  ]
+}

@@ -1,0 +1,101 @@
+{
+  "dataset": "golden_set_v1",
+  "cases": [
+    {
+      "query": "2022年后关于大模型幻觉控制、使用强化学习方法、在CVPR发表的论文",
+      "highly_relevant_papers": [
+        "semantic_scholar:rlhf-vlm-hallucination",
+        "semantic_scholar:tool-augmented-hallucination"
+      ],
+      "partially_relevant_papers": [
+        "openalex:preference-alignment-vlm"
+      ]
+    },
+    {
+      "query": "2023年发表在CVPR、关于object hallucination、使用强化学习的论文",
+      "highly_relevant_papers": [
+        "semantic_scholar:rlhf-vlm-hallucination"
+      ],
+      "partially_relevant_papers": []
+    },
+    {
+      "query": "论文《SPAR: Multi-Agent Scientific Paper Retrieval》讲了什么？",
+      "highly_relevant_papers": [
+        "semantic_scholar:spar-paper"
+      ],
+      "partially_relevant_papers": []
+    },
+    {
+      "query": "2024年CVPR关于tool use降低hallucination的论文",
+      "highly_relevant_papers": [
+        "semantic_scholar:tool-augmented-hallucination"
+      ],
+      "partially_relevant_papers": [
+        "openalex:preference-alignment-vlm"
+      ]
+    },
+    {
+      "query": "Alice Zhang在CVPR发表的object hallucination论文",
+      "highly_relevant_papers": [
+        "semantic_scholar:rlhf-vlm-hallucination"
+      ],
+      "partially_relevant_papers": []
+    },
+    {
+      "query": "2024年关于preference alignment控制多模态幻觉的CVPR论文",
+      "highly_relevant_papers": [
+        "openalex:preference-alignment-vlm"
+      ],
+      "partially_relevant_papers": [
+        "semantic_scholar:rlhf-vlm-hallucination"
+      ]
+    },
+    {
+      "query": "多智能体论文搜索系统SPAR是哪篇论文？",
+      "highly_relevant_papers": [
+        "semantic_scholar:spar-paper"
+      ],
+      "partially_relevant_papers": []
+    },
+    {
+      "query": "PaperQA2 是什么论文？",
+      "highly_relevant_papers": [
+        "openalex:paperqa2-reference"
+      ],
+      "partially_relevant_papers": []
+    },
+    {
+      "query": "2024年EMNLP关于scientific literature QA的论文",
+      "highly_relevant_papers": [
+        "openalex:paperqa2-reference"
+      ],
+      "partially_relevant_papers": []
+    },
+    {
+      "query": "关于vision-language model hallucination control的CVPR论文",
+      "highly_relevant_papers": [
+        "semantic_scholar:rlhf-vlm-hallucination",
+        "semantic_scholar:tool-augmented-hallucination"
+      ],
+      "partially_relevant_papers": [
+        "openalex:preference-alignment-vlm"
+      ]
+    },
+    {
+      "query": "2024年CVPR关于reinforcement signals用于多模态偏好对齐的论文",
+      "highly_relevant_papers": [
+        "openalex:preference-alignment-vlm"
+      ],
+      "partially_relevant_papers": []
+    },
+    {
+      "query": "使用tool use和强化学习降低多模态幻觉的论文",
+      "highly_relevant_papers": [
+        "semantic_scholar:tool-augmented-hallucination"
+      ],
+      "partially_relevant_papers": [
+        "semantic_scholar:rlhf-vlm-hallucination"
+      ]
+    }
+  ]
+}

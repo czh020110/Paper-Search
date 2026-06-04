@@ -1,0 +1,168 @@
+{
+  "papers": [
+    {
+      "id": "semantic_scholar:rlhf-vlm-hallucination",
+      "source_ids": {
+        "semantic_scholar": "S2-RLHF-VLM-001",
+        "openalex": null,
+        "doi": "10.1000/rlhf-vlm-2023",
+        "arxiv": null
+      },
+      "title": "RLHF for Vision-Language Models: Mitigating Hallucinations in Visual Question Answering",
+      "abstract": "This paper studies object hallucination in vision-language models and uses reinforcement learning from human feedback to mitigate hallucinated generations for CVPR 2023 tasks.",
+      "authors": [{"name": "Alice Zhang", "id": "a1"}],
+      "year": 2023,
+      "venue": "CVPR",
+      "publication_date": "2023-06-20",
+      "url": "https://example.org/rlhf-vlm",
+      "open_access_pdf": {"url": "https://example.org/rlhf-vlm.pdf", "status": "open"},
+      "fields": ["computer vision", "multimodal reasoning"],
+      "topics": ["hallucination", "reinforcement learning", "vision-language model"],
+      "citation_count": 35,
+      "reference_count": 42,
+      "source_api": "semantic_scholar",
+      "retrieved_at": "2026-06-03T08:00:00+00:00",
+      "raw": {"rank": 1},
+      "pool_status": "seed"
+    },
+    {
+      "id": "openalex:rlhf-vlm-hallucination-duplicate",
+      "source_ids": {
+        "semantic_scholar": null,
+        "openalex": "OA-RLHF-VLM-001",
+        "doi": "10.1000/rlhf-vlm-2023",
+        "arxiv": null
+      },
+      "title": "RLHF for Vision-Language Models: Mitigating Hallucinations in Visual Question Answering",
+      "abstract": "OpenAlex mirror record for the same CVPR paper with slightly richer metadata.",
+      "authors": [{"name": "Alice Zhang", "id": "a1"}, {"name": "Bo Li", "id": "a2"}],
+      "year": 2023,
+      "venue": "IEEE/CVF Conference on Computer Vision and Pattern Recognition",
+      "publication_date": "2023-06-20",
+      "url": "https://openalex.org/rlhf-vlm",
+      "open_access_pdf": {"url": "https://openalex.org/rlhf-vlm.pdf", "status": "open"},
+      "fields": ["computer vision"],
+      "topics": ["hallucination", "rlhf"],
+      "citation_count": 40,
+      "reference_count": 44,
+      "source_api": "openalex",
+      "retrieved_at": "2026-06-03T08:00:00+00:00",
+      "raw": {"rank": 2},
+      "pool_status": "seed"
+    },
+    {
+      "id": "semantic_scholar:tool-augmented-hallucination",
+      "source_ids": {
+        "semantic_scholar": "S2-TOOL-002",
+        "openalex": null,
+        "doi": "10.1000/tool-augmented-2024",
+        "arxiv": null
+      },
+      "title": "Tool-Augmented Hallucination Control for Large Vision-Language Models",
+      "abstract": "We combine tool use and reinforcement learning to reduce hallucination in large multimodal models and report CVPR 2024 results.",
+      "authors": [{"name": "Chen Wu", "id": "a3"}],
+      "year": 2024,
+      "venue": "CVPR",
+      "publication_date": "2024-06-18",
+      "url": "https://example.org/tool-augmented",
+      "open_access_pdf": {"url": "https://example.org/tool-augmented.pdf", "status": "open"},
+      "fields": ["computer vision", "multimodal reasoning"],
+      "topics": ["hallucination", "tool use", "reinforcement learning"],
+      "citation_count": 22,
+      "reference_count": 31,
+      "source_api": "semantic_scholar",
+      "retrieved_at": "2026-06-03T08:00:00+00:00",
+      "raw": {"rank": 3},
+      "pool_status": "seed"
+    },
+    {
+      "id": "openalex:preference-alignment-vlm",
+      "source_ids": {
+        "semantic_scholar": null,
+        "openalex": "OA-PREF-003",
+        "doi": "10.1000/pref-align-2024",
+        "arxiv": null
+      },
+      "title": "Preference Alignment for Vision-Language Models with Reinforcement Signals",
+      "abstract": "Preference alignment and reward modeling improve hallucination control for multimodal models in CVPR style benchmarks.",
+      "authors": [{"name": "Ding Xu", "id": "a4"}],
+      "year": 2024,
+      "venue": "CVPR",
+      "publication_date": "2024-06-18",
+      "url": "https://example.org/pref-align",
+      "open_access_pdf": {"url": "https://example.org/pref-align.pdf", "status": "open"},
+      "fields": ["computer vision"],
+      "topics": ["preference alignment", "reward model", "hallucination"],
+      "citation_count": 18,
+      "reference_count": 29,
+      "source_api": "openalex",
+      "retrieved_at": "2026-06-03T08:00:00+00:00",
+      "raw": {"rank": 4},
+      "pool_status": "seed"
+    },
+    {
+      "id": "semantic_scholar:spar-paper",
+      "source_ids": {
+        "semantic_scholar": "S2-SPAR-004",
+        "openalex": null,
+        "doi": "10.1000/spar-2024",
+        "arxiv": null
+      },
+      "title": "SPAR: Multi-Agent Scientific Paper Retrieval",
+      "abstract": "SPAR proposes a multi-agent framework for query decomposition and scholarly retrieval with strong recall.",
+      "authors": [{"name": "Evan Sun", "id": "a5"}],
+      "year": 2024,
+      "venue": "ACL",
+      "publication_date": "2024-08-10",
+      "url": "https://example.org/spar",
+      "open_access_pdf": {"url": "https://example.org/spar.pdf", "status": "open"},
+      "fields": ["nlp", "information retrieval"],
+      "topics": ["multi-agent", "scientific paper retrieval"],
+      "citation_count": 12,
+      "reference_count": 20,
+      "source_api": "semantic_scholar",
+      "retrieved_at": "2026-06-03T08:00:00+00:00",
+      "raw": {"rank": 5},
+      "pool_status": "seed"
+    },
+    {
+      "id": "openalex:paperqa2-reference",
+      "source_ids": {
+        "semantic_scholar": null,
+        "openalex": "OA-PAPERQA2-005",
+        "doi": "10.1000/paperqa2-2024",
+        "arxiv": null
+      },
+      "title": "PaperQA2: Hybrid Retrieval-Augmented QA for Scientific Literature",
+      "abstract": "PaperQA2 combines retrieval and structured evidence synthesis for literature QA.",
+      "authors": [{"name": "Fiona He", "id": "a6"}],
+      "year": 2024,
+      "venue": "EMNLP",
+      "publication_date": "2024-11-10",
+      "url": "https://example.org/paperqa2",
+      "open_access_pdf": {"url": "https://example.org/paperqa2.pdf", "status": "open"},
+      "fields": ["nlp", "question answering"],
+      "topics": ["retrieval-augmented generation", "scientific qa"],
+      "citation_count": 9,
+      "reference_count": 18,
+      "source_api": "openalex",
+      "retrieved_at": "2026-06-03T08:00:00+00:00",
+      "raw": {"rank": 6},
+      "pool_status": "seed"
+    }
+  ],
+  "edges": [
+    {
+      "source_paper_id": "semantic_scholar:tool-augmented-hallucination",
+      "target_paper_id": "semantic_scholar:rlhf-vlm-hallucination",
+      "edge_type": "references",
+      "discovered_round": 0
+    },
+    {
+      "source_paper_id": "openalex:preference-alignment-vlm",
+      "target_paper_id": "semantic_scholar:rlhf-vlm-hallucination",
+      "edge_type": "references",
+      "discovered_round": 0
+    }
+  ]
+}
