@@ -74,5 +74,6 @@ config.local.yml
 .DS_Store
 Thumbs.db
 
-
+# tools
 .playwright-mcp/
+.codegraph/

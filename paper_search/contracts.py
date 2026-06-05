@@ -20,6 +20,7 @@ class QueryPlan:
     semantic_queries: dict[str, list[str]]
     sub_queries_for_retrieval: list[str]
     api_payload_translation: dict[str, list[dict[str, Any]]]
+    query_expansion_policy: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

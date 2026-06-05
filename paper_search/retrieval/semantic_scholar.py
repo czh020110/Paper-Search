@@ -9,7 +9,9 @@ from urllib.parse import urlencode
 
 import httpx
 
+from ..cache import CacheStore
 from ..contracts import Paper
+from ..errors import classify_httpx_error, is_retryable
 from .shared import VENUE_ALIASES
 
 logger = logging.getLogger(__name__)
@@ -22,7 +24,7 @@ MAX_RETRIES = 3
 RETRY_BACKOFF = 2.0  # seconds, multiplied by attempt number
 
 
-def search_papers(query: str, year_from: int | None = None, limit: int = 20) -> list[Paper]:
+def search_papers(query: str, year_from: int | None = None, limit: int = 20, cache: CacheStore | None = None) -> list[Paper]:
     params: dict[str, Any] = {
         "query": query,
         "fields": S2_FIELDS,
@@ -33,12 +35,12 @@ def search_papers(query: str, year_from: int | None = None, limit: int = 20) -> 
 
     headers = _build_headers()
     url = f"{S2_BASE_URL}/paper/search?{urlencode(params)}"
-    payload = _request_with_retry(url, headers)
+    payload = _request_with_retry(url, headers, cache=cache)
     raw_papers = cast(list[dict[str, Any]], payload.get("data") or [])
     return [_paper_from_s2(item) for item in raw_papers]
 
 
-def search_papers_by_title(title: str, limit: int = 10) -> list[Paper]:
+def search_papers_by_title(title: str, limit: int = 10, cache: CacheStore | None = None) -> list[Paper]:
     params: dict[str, Any] = {
         "query": title,
         "fields": S2_FIELDS,
@@ -46,12 +48,18 @@ def search_papers_by_title(title: str, limit: int = 10) -> list[Paper]:
     }
     headers = _build_headers()
     url = f"{S2_BASE_URL}/paper/search?{urlencode(params)}"
-    payload = _request_with_retry(url, headers)
+    payload = _request_with_retry(url, headers, cache=cache)
     raw_papers = cast(list[dict[str, Any]], payload.get("data") or [])
     return [_paper_from_s2(item) for item in raw_papers]
 
 
-def _request_with_retry(url: str, headers: dict[str, str]) -> dict[str, Any]:
+def _request_with_retry(url: str, headers: dict[str, str], cache: CacheStore | None = None) -> dict[str, Any]:
+    if cache is not None:
+        cached_body = cache.get("api_responses", url)
+        if cached_body is not None:
+            logger.info("S2 cache hit: %s", url[:80])
+            return cached_body
+
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             response = httpx.get(url, headers=headers, timeout=30.0)
@@ -61,20 +69,25 @@ def _request_with_retry(url: str, headers: dict[str, str]) -> dict[str, Any]:
                 time.sleep(wait)
                 continue
             response.raise_for_status()
-            return response.json()
+            body = response.json()
+            if cache is not None:
+                cache.put("api_responses", url, data=body)
+            return body
         except httpx.HTTPStatusError as e:
-            if attempt == MAX_RETRIES:
-                logger.error("S2 request failed after %d retries: %s", MAX_RETRIES, e)
+            classified = classify_httpx_error(e)
+            if not is_retryable(classified) or attempt == MAX_RETRIES:
+                logger.error("S2 request failed (not retryable or max retries): %s", classified)
                 return {}
             wait = RETRY_BACKOFF * attempt
-            logger.warning("S2 HTTP error %d, retrying in %.1fs", e.response.status_code, wait)
+            logger.warning("S2 HTTP error %d (%s), retrying in %.1fs", e.response.status_code, type(classified).__name__, wait)
             time.sleep(wait)
         except httpx.RequestError as e:
-            if attempt == MAX_RETRIES:
-                logger.error("S2 request error after %d retries: %s", MAX_RETRIES, e)
+            classified = classify_httpx_error(e)
+            if not is_retryable(classified) or attempt == MAX_RETRIES:
+                logger.error("S2 request error (not retryable or max retries): %s", classified)
                 return {}
             wait = RETRY_BACKOFF * attempt
-            logger.warning("S2 request error, retrying in %.1fs: %s", wait, e)
+            logger.warning("S2 request error (%s), retrying in %.1fs: %s", type(classified).__name__, wait, e)
             time.sleep(wait)
     return {}
 

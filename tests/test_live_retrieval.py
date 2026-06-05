@@ -53,7 +53,7 @@ S2_SEARCH_RESPONSE: dict[str, Any] = {
 }
 
 OA_SEARCH_RESPONSE: dict[str, Any] = {
-    "meta": {"count": 2, "cursor": "next_cursor_value"},
+    "meta": {"count": 2, "cursor": None},
     "results": [
         {
             "id": "https://openalex.org/W999",
@@ -159,7 +159,8 @@ class TestSemanticScholarParser(unittest.TestCase):
         self.assertEqual(paper.source_ids["doi"], "10.1234/test")
         self.assertEqual(paper.source_ids["arxiv"], "2301.00001")
         self.assertIsNotNone(paper.open_access_pdf)
-        self.assertEqual(paper.open_access_pdf["url"], "https://arxiv.org/pdf/2301.00001")
+        if paper.open_access_pdf is not None:
+            self.assertEqual(paper.open_access_pdf["url"], "https://arxiv.org/pdf/2301.00001")
         self.assertEqual(paper.fields, ["Computer Science", "AI"])
 
     def test_paper_from_s2_minimal(self) -> None:
@@ -278,6 +279,64 @@ class TestLiveBackendIntegration(unittest.TestCase):
 
         self.assertGreater(len(papers), 0)
         self.assertIsInstance(papers[0], Paper)
+
+    @patch("paper_search.retrieval.semantic_scholar.httpx.get")
+    @patch("paper_search.retrieval.openalex.httpx.get")
+    def test_api_payload_translation_consumed(self, mock_oa_get: MagicMock, mock_s2_get: MagicMock) -> None:
+        """When api_payload_translation is populated, it should be used for API calls."""
+        s2_response = MagicMock()
+        s2_response.status_code = 200
+        s2_response.json.return_value = S2_SEARCH_RESPONSE
+        mock_s2_get.return_value = s2_response
+
+        oa_response = MagicMock()
+        oa_response.status_code = 200
+        oa_response.json.return_value = OA_SEARCH_RESPONSE
+        mock_oa_get.return_value = oa_response
+
+        query_plan = _make_query_plan("semantic")
+        # The plan has api_payload_translation with 2 S2 entries and 2 OA entries
+        self.assertEqual(len(query_plan.api_payload_translation["semantic_scholar"]), 2)
+        self.assertEqual(len(query_plan.api_payload_translation["openalex"]), 2)
+
+        papers, edges = retrieve_live_papers(query_plan)
+
+        # Should have called S2 API with payload translation queries
+        self.assertTrue(mock_s2_get.called)
+        self.assertGreater(len(papers), 0)
+
+        # Verify the S2 URL contains the payload translation query
+        first_s2_call = mock_s2_get.call_args_list[0]
+        s2_url = first_s2_call[0][0] if first_s2_call[0] else first_s2_call[1].get("url", "")
+        self.assertIn("hallucination", s2_url)
+
+    @patch("paper_search.retrieval.semantic_scholar.httpx.get")
+    @patch("paper_search.retrieval.openalex.httpx.get")
+    def test_fallback_when_payload_empty(self, mock_oa_get: MagicMock, mock_s2_get: MagicMock) -> None:
+        """When api_payload_translation is empty, should fall back to _build_english_queries."""
+        s2_response = MagicMock()
+        s2_response.status_code = 200
+        s2_response.json.return_value = S2_SEARCH_RESPONSE
+        mock_s2_get.return_value = s2_response
+
+        oa_response = MagicMock()
+        oa_response.status_code = 200
+        oa_response.json.return_value = OA_SEARCH_RESPONSE
+        mock_oa_get.return_value = oa_response
+
+        # Create a plan with empty api_payload_translation
+        plan = QueryPlan(
+            original_query="test query about hallucination",
+            intent_analysis=IntentAnalysis(domain="Academic Search", query_type="semantic"),
+            hard_filters={"year": {"operator": ">=", "value": 2022}},
+            ranking_signals={},
+            semantic_queries={"core_concepts": ["hallucination"], "methodologies": []},
+            sub_queries_for_retrieval=["hallucination test"],
+            api_payload_translation={"semantic_scholar": [], "openalex": []},
+        )
+
+        papers, edges = retrieve_live_papers(plan)
+        self.assertGreater(len(papers), 0)
 
 
 if __name__ == "__main__":

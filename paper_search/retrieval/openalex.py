@@ -9,7 +9,9 @@ from urllib.parse import urlencode
 
 import httpx
 
+from ..cache import CacheStore
 from ..contracts import Paper
+from ..errors import classify_httpx_error, is_retryable
 from .shared import VENUE_ALIASES
 
 logger = logging.getLogger(__name__)
@@ -20,43 +22,63 @@ MAX_RETRIES = 3
 RETRY_BACKOFF = 2.0
 
 
-def search_works(query: str, year_from: int | None = None, per_page: int = 25) -> list[Paper]:
-    params: dict[str, Any] = {
-        "search": query,
-        "per_page": per_page,
-        "cursor": "*",
-    }
-    if year_from is not None:
-        params["filter"] = f"publication_year:>{year_from - 1}"
+def search_works(query: str, year_from: int | None = None, per_page: int = 25, cache: CacheStore | None = None) -> list[Paper]:
+    papers: list[Paper] = []
+    cursor = "*"
+    while cursor:
+        params: dict[str, Any] = {
+            "search": query,
+            "per_page": per_page,
+            "cursor": cursor,
+        }
+        if year_from is not None:
+            params["filter"] = f"publication_year:>{year_from - 1}"
 
-    mailto = os.getenv("OPENALEX_MAILTO")
-    if mailto:
-        params["mailto"] = mailto
+        mailto = os.getenv("OPENALEX_MAILTO")
+        if mailto:
+            params["mailto"] = mailto
 
-    url = f"{OA_BASE_URL}/works?{urlencode(params, doseq=True)}"
-    payload = _request_with_retry(url)
-    raw_works = cast(list[dict[str, Any]], payload.get("results") or [])
-    return [_paper_from_oa(item) for item in raw_works]
-
-
-def search_works_by_title(title: str, per_page: int = 10) -> list[Paper]:
-    params: dict[str, Any] = {
-        "search": title,
-        "per_page": per_page,
-        "cursor": "*",
-    }
-
-    mailto = os.getenv("OPENALEX_MAILTO")
-    if mailto:
-        params["mailto"] = mailto
-
-    url = f"{OA_BASE_URL}/works?{urlencode(params, doseq=True)}"
-    payload = _request_with_retry(url)
-    raw_works = cast(list[dict[str, Any]], payload.get("results") or [])
-    return [_paper_from_oa(item) for item in raw_works]
+        url = f"{OA_BASE_URL}/works?{urlencode(params, doseq=True)}"
+        payload = _request_with_retry(url, cache=cache)
+        raw_works = cast(list[dict[str, Any]], payload.get("results") or [])
+        papers.extend(_paper_from_oa(item) for item in raw_works)
+        cursor = cast(str | None, payload.get("meta", {}).get("cursor"))
+        if not cursor or len(raw_works) == 0:
+            break
+    return papers
 
 
-def _request_with_retry(url: str) -> dict[str, Any]:
+def search_works_by_title(title: str, per_page: int = 10, cache: CacheStore | None = None) -> list[Paper]:
+    papers: list[Paper] = []
+    cursor = "*"
+    while cursor:
+        params: dict[str, Any] = {
+            "search": title,
+            "per_page": per_page,
+            "cursor": cursor,
+        }
+
+        mailto = os.getenv("OPENALEX_MAILTO")
+        if mailto:
+            params["mailto"] = mailto
+
+        url = f"{OA_BASE_URL}/works?{urlencode(params, doseq=True)}"
+        payload = _request_with_retry(url, cache=cache)
+        raw_works = cast(list[dict[str, Any]], payload.get("results") or [])
+        papers.extend(_paper_from_oa(item) for item in raw_works)
+        cursor = cast(str | None, payload.get("meta", {}).get("cursor"))
+        if not cursor or len(raw_works) == 0:
+            break
+    return papers
+
+
+def _request_with_retry(url: str, cache: CacheStore | None = None) -> dict[str, Any]:
+    if cache is not None:
+        cached_body = cache.get("api_responses", url)
+        if cached_body is not None:
+            logger.info("OA cache hit: %s", url[:80])
+            return cached_body
+
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             response = httpx.get(url, timeout=30.0)
@@ -66,20 +88,25 @@ def _request_with_retry(url: str) -> dict[str, Any]:
                 time.sleep(wait)
                 continue
             response.raise_for_status()
-            return response.json()
+            body = response.json()
+            if cache is not None:
+                cache.put("api_responses", url, data=body)
+            return body
         except httpx.HTTPStatusError as e:
-            if attempt == MAX_RETRIES:
-                logger.error("OA request failed after %d retries: %s", MAX_RETRIES, e)
+            classified = classify_httpx_error(e)
+            if not is_retryable(classified) or attempt == MAX_RETRIES:
+                logger.error("OA request failed (not retryable or max retries): %s", classified)
                 return {}
             wait = RETRY_BACKOFF * attempt
-            logger.warning("OA HTTP error %d, retrying in %.1fs", e.response.status_code, wait)
+            logger.warning("OA HTTP error %d (%s), retrying in %.1fs", e.response.status_code, type(classified).__name__, wait)
             time.sleep(wait)
         except httpx.RequestError as e:
-            if attempt == MAX_RETRIES:
-                logger.error("OA request error after %d retries: %s", MAX_RETRIES, e)
+            classified = classify_httpx_error(e)
+            if not is_retryable(classified) or attempt == MAX_RETRIES:
+                logger.error("OA request error (not retryable or max retries): %s", classified)
                 return {}
             wait = RETRY_BACKOFF * attempt
-            logger.warning("OA request error, retrying in %.1fs: %s", wait, e)
+            logger.warning("OA request error (%s), retrying in %.1fs: %s", type(classified).__name__, wait, e)
             time.sleep(wait)
     return {}
 

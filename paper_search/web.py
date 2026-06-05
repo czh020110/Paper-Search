@@ -39,13 +39,13 @@ async def api_search_post(request: Request) -> dict[str, Any]:
     content_type = request.headers.get("content-type", "")
     if "application/json" in content_type:
         body = await request.json()
-        query = body.get("query", "").strip()
+        query = str(body.get("query", "")).strip()
     else:
         form = await request.form()
-        query = form.get("query", "").strip()
+        query = str(form.get("query", "")).strip()
 
     if not query:
-        return {"error": "查询不能为空"}, 400
+        return JSONResponse({"error": "查询不能为空"}, status_code=400)  # type: ignore[return-value]
     return _run_pipeline(query)
 
 

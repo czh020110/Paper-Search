@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 
-from paper_search.config import load_settings
+from paper_search.config import _load_private_config, _resolve, load_settings
 from paper_search.query_understanding import build_query_plan
 from paper_search.retrieval.mock_backend import retrieve_mock_papers
 
@@ -35,6 +37,60 @@ class ContractTests(unittest.TestCase):
         self.assertIn("semantic_scholar:rlhf-vlm-hallucination", ids)
         self.assertIn("openalex:rlhf-vlm-hallucination-duplicate", ids)
         self.assertTrue(any((paper.venue or "") == "CVPR" for paper in papers))
+
+
+class TestConfigResolver(unittest.TestCase):
+    def test_env_var_takes_precedence(self) -> None:
+        result = _resolve("cache_dir", "CACHE_DIR", {"cache_dir": "/private/cache"}, "/default/cache")
+        os.environ["CACHE_DIR"] = "/env/cache"
+        try:
+            env_result = _resolve("cache_dir", "CACHE_DIR", {"cache_dir": "/private/cache"}, "/default/cache")
+            self.assertEqual(env_result, "/env/cache")
+        finally:
+            del os.environ["CACHE_DIR"]
+
+    def test_private_config_over_default(self) -> None:
+        # Ensure env var is not set
+        os.environ.pop("OUTPUT_DIR", None)
+        result = _resolve("output_dir", "OUTPUT_DIR", {"output_dir": "/private/output"}, "/default/output")
+        self.assertEqual(result, "/private/output")
+
+    def test_default_when_no_env_or_private(self) -> None:
+        os.environ.pop("LOG_LEVEL", None)
+        result = _resolve("log_level", "LOG_LEVEL", {}, "INFO")
+        self.assertEqual(result, "INFO")
+
+    def test_missing_private_config_file_harmless(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_cwd = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                result = _load_private_config()
+                self.assertEqual(result, {})
+            finally:
+                os.chdir(old_cwd)
+
+    def test_config_snapshot_reflects_resolved_values(self) -> None:
+        os.environ.pop("CACHE_DIR", None)
+        os.environ.pop("OUTPUT_DIR", None)
+        settings = load_settings()
+        snapshot = settings.config_snapshot()
+        # Defaults should appear
+        self.assertIn(".cache", snapshot["runtime"]["cache_dir"])
+        self.assertIn("outputs", snapshot["runtime"]["output_dir"])
+
+    def test_private_config_loads_from_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "config.local.json"
+            config_file.write_text(json.dumps({"log_level": "DEBUG", "output_dir": "/custom/output"}), encoding="utf-8")
+            old_cwd = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                result = _load_private_config()
+                self.assertEqual(result.get("log_level"), "DEBUG")
+                self.assertEqual(result.get("output_dir"), "/custom/output")
+            finally:
+                os.chdir(old_cwd)
 
 
 if __name__ == "__main__":
