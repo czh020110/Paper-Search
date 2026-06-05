@@ -39,10 +39,7 @@ def _build_handler(output_root: Path, settings: Settings):
                 return
 
             try:
-                backend = form_data.get("backend", ["mock"])[0].strip()
-                if backend not in ("mock", "live"):
-                    backend = "mock"
-                result = run_pipeline(query=query, backend=backend, output_root=output_root, settings=settings)
+                result = run_pipeline(query=query, backend="live", output_root=output_root, settings=settings)
                 self._send_html(_render_page(query=query, result=result))
             except Exception as exc:  # noqa: BLE001
                 self._send_html(_render_page(query=query, error=str(exc)), status=500)
@@ -86,7 +83,7 @@ def _render_page(query: str = "", result: dict[str, object] | None = None, error
 </head>
 <body>
   <h1>Paper Search 最小闭环</h1>
-  <p>当前页面使用 mock 数据跑通查询理解 → 初检索 → 去重 → 结果整理 → experiment 记录。</p>
+  <p>当前页面调用 Semantic Scholar 与 OpenAlex 真实学术检索 API，查询理解 → 初检索 → 去重 → 结果整理。</p>
   <form method="post" action="/search">
     <input type="text" name="query" value="{escaped_query}" placeholder="输入学术查询，例如：2022年后关于大模型幻觉控制的CVPR强化学习论文" />
     <button type="submit">运行检索</button>

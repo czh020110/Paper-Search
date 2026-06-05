@@ -13,7 +13,7 @@ from .web import run_server
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the paper search minimal offline loop")
     parser.add_argument("--query", help="Natural language academic query")
-    parser.add_argument("--backend", default="mock", choices=["mock", "live"], help="Retrieval backend: mock uses fixtures, live calls real APIs")
+    parser.add_argument("--backend", default="live", choices=["mock", "live"], help="Retrieval backend: live calls real APIs (default), mock uses local fixtures for testing only")
     parser.add_argument("--output-dir", default=None, help="Override output root directory")
     parser.add_argument("--serve", action="store_true", help="Start the local web interface")
     parser.add_argument("--host", default="127.0.0.1", help="Host for the local web interface")

@@ -218,7 +218,9 @@ cp .env.example .env
 
 ## CLI 使用
 
-### Mock 后端（使用本地 fixtures 数据，无需联网）
+### Mock 后端（仅用于开发调试和测试，使用本地 fixtures 数据，无需联网）
+
+> ⚠️ Mock 后端从本地 fixtures 读取硬编码数据，不会调用真实学术 API，返回的论文内容与查询无关。**仅用于开发调试、CI 测试和契约验证，不反映真实检索效果。**
 
 ```bash
 # 基本用法
@@ -231,17 +233,17 @@ uv run paper-search --query "2022年后关于大模型幻觉控制、使用强�
 uv run python -m paper_search --query "..." --backend mock
 ```
 
-### Live 后端（调用 Semantic Scholar 与 OpenAlex 真实 API）
+### Live 后端（默认模式，调用 Semantic Scholar 与 OpenAlex 真实 API）
 
 ```bash
-# 基本用法（需要联网，建议在 .env 中配置 SEMANTIC_SCHOLAR_API_KEY 和 OPENALEX_MAILTO）
-uv run paper-search --query "2022年后关于大模型幻觉控制、使用强化学习方法、在CVPR发表的论文" --backend live
+# 不指定 --backend 时默认使用 live
+uv run paper-search --query "2022年后关于大模型幻觉控制、使用强化学习方法、在CVPR发表的论文"
 
 # 指定输出目录
 uv run paper-search --query "..." --backend live --output-dir outputs
 ```
 
-### Web 界面
+### Web 界面（固定使用 live 后端）
 
 ```bash
 # 启动本地 Web 服务（默认端口 8000）
@@ -250,7 +252,7 @@ uv run paper-search-web
 # 或使用 python -m 方式，可自定义 host 和 port
 uv run python -m paper_search --serve --host 127.0.0.1 --port 8000
 
-# 浏览器访问 http://127.0.0.1:8000，输入查询并选择 backend（mock 或 live）
+# 浏览器访问 http://127.0.0.1:8000，输入查询即可检索真实学术 API
 ```
 
 ## 输出产物
