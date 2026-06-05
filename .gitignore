@@ -29,6 +29,10 @@ venv/
 env/
 ENV/
 
+# uv
+uv.lock
+.python-version
+
 # Python build artifacts
 build/
 dist/
