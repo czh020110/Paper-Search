@@ -10,13 +10,14 @@ from .contracts import ExperimentRecord, GraphOutput, Paper, QueryPlan
 from .dedupe import dedupe_papers
 from .evaluation import evaluate_query
 from .query_understanding import build_query_plan
+from .retrieval.live_backend import retrieve_live_papers
 from .retrieval.mock_backend import retrieve_mock_papers
 from .writers import write_outputs
 
 
 def run_pipeline(query: str, backend: str, output_root: Path, settings: Settings) -> dict[str, object]:
-    if backend != "mock":
-        raise ValueError(f"Unsupported backend: {backend}")
+    if backend not in ("mock", "live"):
+        raise ValueError(f"Unsupported backend: {backend}. Choose 'mock' or 'live'.")
 
     timestamp = datetime.now(timezone.utc)
     run_id = f"run_{timestamp.strftime('%Y%m%d%H%M%S')}_{uuid4().hex[:8]}"
@@ -24,7 +25,12 @@ def run_pipeline(query: str, backend: str, output_root: Path, settings: Settings
     fixtures_dir = Path(__file__).resolve().parent.parent / "fixtures"
 
     query_plan = build_query_plan(query)
-    retrieved_papers, raw_edges = retrieve_mock_papers(query_plan, fixtures_dir)
+
+    if backend == "mock":
+        retrieved_papers, raw_edges = retrieve_mock_papers(query_plan, fixtures_dir)
+    else:
+        retrieved_papers, raw_edges = retrieve_live_papers(query_plan)
+
     deduped_papers = _rank_papers(dedupe_papers(retrieved_papers))
     for paper in deduped_papers:
         paper.pool_status = "selected"
@@ -42,18 +48,10 @@ def run_pipeline(query: str, backend: str, output_root: Path, settings: Settings
         selected_count=len(deduped_papers),
         graph_output=graph_output,
         evaluation=evaluation,
+        backend=backend,
     )
 
-    placeholder_record = ExperimentRecord(
-        run_id=run_id,
-        timestamp=timestamp.isoformat(),
-        query=query,
-        config_snapshot=settings.config_snapshot(),
-        dataset=str(evaluation.get("dataset", "golden_set_v1")),
-        stage_metrics=stage_metrics,
-        output_files={},
-    )
-    output_files = write_outputs(run_dir, query_plan, deduped_papers, graph_output, placeholder_record)
+    output_files = _compute_output_file_paths(run_dir)
     experiment_record = ExperimentRecord(
         run_id=run_id,
         timestamp=timestamp.isoformat(),
@@ -71,6 +69,15 @@ def run_pipeline(query: str, backend: str, output_root: Path, settings: Settings
         "papers": [paper.to_dict() for paper in deduped_papers],
         "output_files": output_files,
         "evaluation": evaluation,
+    }
+
+
+def _compute_output_file_paths(run_dir: Path) -> dict[str, str]:
+    return {
+        "markdown": str(run_dir / "result.md"),
+        "graph": str(run_dir / "graph.json"),
+        "experiment": str(run_dir / "experiment.json"),
+        "log": str(run_dir / "logs"),
     }
 
 
@@ -118,8 +125,9 @@ def _build_stage_metrics(
     selected_count: int,
     graph_output: GraphOutput,
     evaluation: dict[str, Any],
+    backend: str,
 ) -> dict[str, object]:
-    api_calls = len(query_plan.sub_queries_for_retrieval) * 2
+    api_calls = len(query_plan.sub_queries_for_retrieval) * 2 if backend == "live" else 0
     return {
         "query_understanding": {
             "latency_ms": 0,
@@ -134,6 +142,7 @@ def _build_stage_metrics(
             "raw_result_count": retrieved_count,
             "average_hits_per_query": retrieved_count / max(len(query_plan.sub_queries_for_retrieval), 1),
             "minimum_recall": evaluation.get("recall"),
+            "backend": backend,
         },
         "result_format": {
             "latency_ms": 0,

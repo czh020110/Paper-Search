@@ -7,13 +7,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from ..contracts import Paper, QueryPlan
-
-VENUE_ALIASES = {
-    "ieee/cvf conference on computer vision and pattern recognition": "CVPR",
-    "cvpr": "CVPR",
-    "neurips": "NeurIPS",
-    "iclr": "ICLR",
-}
+from .shared import VENUE_ALIASES
 
 
 def retrieve_mock_papers(query_plan: QueryPlan, fixtures_dir: Path) -> tuple[list[Paper], list[dict[str, object]]]:

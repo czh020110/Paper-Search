@@ -39,7 +39,10 @@ def _build_handler(output_root: Path, settings: Settings):
                 return
 
             try:
-                result = run_pipeline(query=query, backend="mock", output_root=output_root, settings=settings)
+                backend = form_data.get("backend", ["mock"])[0].strip()
+                if backend not in ("mock", "live"):
+                    backend = "mock"
+                result = run_pipeline(query=query, backend=backend, output_root=output_root, settings=settings)
                 self._send_html(_render_page(query=query, result=result))
             except Exception as exc:  # noqa: BLE001
                 self._send_html(_render_page(query=query, error=str(exc)), status=500)

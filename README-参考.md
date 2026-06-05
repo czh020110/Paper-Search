@@ -200,6 +200,90 @@
 
 ---
 
+# 使用方式
+
+## 安装
+
+```bash
+# 安装 uv（如未安装）
+brew install uv
+
+# 在项目根目录初始化虚拟环境并安装依赖
+uv sync
+
+# 复制环境变量模板并填入实际密钥
+cp .env.example .env
+# 编辑 .env 填入 API Key（SEMANTIC_SCHOLAR_API_KEY 为可选，有 key 可提升速率限制；OPENALEX_MAILTO 为可选，填入邮箱可进入礼貌池获得更稳定的服务）
+```
+
+## CLI 使用
+
+### Mock 后端（使用本地 fixtures 数据，无需联网）
+
+```bash
+# 基本用法
+uv run paper-search --query "2022年后关于大模型幻觉控制、使用强化学习方法、在CVPR发表的论文" --backend mock
+
+# 指定输出目录
+uv run paper-search --query "2022年后关于大模型幻觉控制、使用强化学习方法、在CVPR发表的论文" --backend mock --output-dir outputs
+
+# 也可以使用 python -m 方式调用
+uv run python -m paper_search --query "..." --backend mock
+```
+
+### Live 后端（调用 Semantic Scholar 与 OpenAlex 真实 API）
+
+```bash
+# 基本用法（需要联网，建议在 .env 中配置 SEMANTIC_SCHOLAR_API_KEY 和 OPENALEX_MAILTO）
+uv run paper-search --query "2022年后关于大模型幻觉控制、使用强化学习方法、在CVPR发表的论文" --backend live
+
+# 指定输出目录
+uv run paper-search --query "..." --backend live --output-dir outputs
+```
+
+### Web 界面
+
+```bash
+# 启动本地 Web 服务（默认端口 8000）
+uv run paper-search-web
+
+# 或使用 python -m 方式，可自定义 host 和 port
+uv run python -m paper_search --serve --host 127.0.0.1 --port 8000
+
+# 浏览器访问 http://127.0.0.1:8000，输入查询并选择 backend（mock 或 live）
+```
+
+## 输出产物
+
+每次运行会在 `outputs/<run_id>/` 下生成三个文件：
+
+| 文件 | 内容 |
+|------|------|
+| `result.md` | Markdown 论文列表，含查询摘要、高度相关论文、部分相关论文、引文关系说明和运行摘要 |
+| `graph.json` | 结构化数据，含 `query`、`nodes`（论文节点列表）、`edges`（引文关系边列表） |
+| `experiment.json` | 实验记录，含 `run_id`、配置快照、阶段指标（query_understanding / initial_retrieval / result_format / overall）、输出文件路径 |
+
+## 运行测试
+
+```bash
+uv run python -m unittest discover -s tests -v
+```
+
+## 环境变量说明
+
+| 变量 | 必需 | 说明 |
+|------|------|------|
+| `SEMANTIC_SCHOLAR_API_KEY` | 否 | Semantic Scholar API 认证，有 key 可提升速率限制；留空则使用公共端点（速率较低） |
+| `OPENALEX_MAILTO` | 否 | OpenAlex 礼貌池参数，填入邮箱可获得更稳定和更快的响应 |
+| `LLM_API_KEY` | 否（精筛阶段启用时必需） | LLM API 认证密钥 |
+| `LLM_API_BASE` | 否 | LLM API 端点，默认 `https://api.openai.com/v1` |
+| `LLM_MODEL` | 否 | LLM 模型名称，默认 `gpt-4o-mini` |
+| `CACHE_DIR` | 否 | 缓存根目录，默认 `.cache` |
+| `OUTPUT_DIR` | 否 | 结果输出根目录，默认 `outputs` |
+| `LOG_LEVEL` | 否 | 日志级别，默认 `INFO` |
+
+---
+
 # 方向
 
 # STEP
