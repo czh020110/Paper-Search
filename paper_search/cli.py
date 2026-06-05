@@ -7,7 +7,6 @@ from typing import Any
 
 from .config import load_settings
 from .pipeline import run_pipeline
-from .web import run_server
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -15,7 +14,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--query", help="Natural language academic query")
     parser.add_argument("--backend", default="live", choices=["mock", "live"], help="Retrieval backend: live calls real APIs (default), mock uses local fixtures for testing only")
     parser.add_argument("--output-dir", default=None, help="Override output root directory")
-    parser.add_argument("--serve", action="store_true", help="Start the local web interface")
+    parser.add_argument("--serve", action="store_true", help="Start FastAPI web server (includes Swagger UI at /docs)")
     parser.add_argument("--host", default="127.0.0.1", help="Host for the local web interface")
     parser.add_argument("--port", type=int, default=8000, help="Port for the local web interface")
     return parser
@@ -28,7 +27,8 @@ def main() -> int:
     output_dir = Path(args.output_dir) if args.output_dir else settings.output_dir
 
     if args.serve:
-        run_server(host=args.host, port=args.port, output_root=output_dir, settings=settings)
+        import uvicorn
+        uvicorn.run("paper_search.web:app", host=args.host, port=args.port, reload=False)
         return 0
 
     if not args.query:

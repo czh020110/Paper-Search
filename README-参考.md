@@ -246,7 +246,7 @@ uv run paper-search --query "..." --backend live --output-dir outputs
 ### Web 界面（固定使用 live 后端）
 
 ```bash
-# 启动本地 Web 服务（默认端口 8000）
+# 启动 FastAPI Web 服务（默认端口 8000）
 uv run paper-search-web
 
 # 或使用 python -m 方式，可自定义 host 和 port
@@ -254,6 +254,23 @@ uv run python -m paper_search --serve --host 127.0.0.1 --port 8000
 
 # 浏览器访问 http://127.0.0.1:8000，输入查询即可检索真实学术 API
 ```
+
+启动后可访问以下页面：
+
+| 地址 | 说明 |
+|------|------|
+| `http://127.0.0.1:8000/search` | 搜索页面，输入自然语言查询 |
+| `http://127.0.0.1:8000/docs` | **Swagger UI** — 交互式 API 调试界面，可直接发送请求并查看响应 |
+| `http://127.0.0.1:8000/redoc` | **ReDoc** — API 文档阅读界面 |
+
+API 端点：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/search?q=...` | 检索论文 |
+| POST | `/api/search` | 检索论文（JSON body: `{"query": "..."}`） |
+| GET | `/api/runs` | 列出历史运行 |
+| GET | `/api/runs/{run_id}` | 获取某次运行详情 |
 
 ## 输出产物
 
