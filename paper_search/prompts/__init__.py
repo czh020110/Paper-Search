@@ -169,6 +169,48 @@ JUDGE_SCHEMA: dict = {
     },
 }
 
+# Single-paper version of judge prompt for concurrent per-paper LLM calls.
+JUDGE_SINGLE_PROMPT = """\
+角色：严谨的学术领域专家。根据【原始学术查询】评估下面这篇论文的相关性。
+
+【原始学术查询】：
+{query}
+
+【论文信息】：
+- 标题：{title}
+- 摘要：{abstract}
+- Venue：{venue}
+- 年份：{year}
+
+【任务指令】：
+1. 对比查询意图与论文内容，判断是否满足主题、方法、时间与 venue 要求。
+2. venue 字段缺失或写法不一致时，不直接判负，需结合标题、摘要与其他元数据综合判断。
+3. 分类结果只能在 [高度相关, 部分相关, 不相关] 中选择。
+4. 输出一句判定理由与一句主要贡献。
+5. 严格输出 JSON 对象，不添加额外说明。
+
+输出格式：
+{{
+  "paper_id": "{paper_id}",
+  "relevance": "<高度相关/部分相关/不相关>",
+  "reason": "<判定理由（一句）>",
+  "contribution": "<论文主要贡献（一句）>"
+}}
+"""
+
+JUDGE_SINGLE_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "paper_id": {"type": "string"},
+        "relevance": {"type": "string", "enum": ["高度相关", "部分相关", "不相关"]},
+        "reason": {"type": "string"},
+        "contribution": {"type": "string"},
+    },
+    "required": ["paper_id", "relevance", "reason", "contribution"],
+}
+
+JUDGE_CONCURRENCY = 100
+
 RERANK_PROMPT = """\
 You are an academic relevance scorer. Given a user query and a list of candidate papers,
 score each paper's relevance to the query on a 0-10 scale.

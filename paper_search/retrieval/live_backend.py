@@ -68,43 +68,102 @@ def retrieve_live_papers(query_plan: QueryPlan, cache: CacheStore | None = None,
 
     all_papers: list[Paper] = []
 
-    # S2: sequential with delay between requests (respect rate limits without API key)
+    # S2 rate-limits: without an API key ~1 rps → sequential with delay;
+    # with a key it rises to ~100 rps → we can fan out in parallel.
     has_s2_key = bool(os.getenv("SEMANTIC_SCHOLAR_API_KEY"))
-    for i, fn in enumerate(s2_callables):
+
+    def _run_s2_one(fn: Callable[[], list[Paper]], idx: int) -> list[Paper]:
         if budget and not budget.can_call_api():
-            logger.info("S2 skipped remaining tasks (budget exhausted)")
+            logger.info("S2 skipped task %d/%d (budget exhausted)", idx + 1, len(s2_callables))
+            return []
+        try:
+            result = fn()
+            if isinstance(result, list):
+                if budget:
+                    budget.increment_api_calls()
+                logger.info("S2 retrieved %d papers (task %d/%d)", len(result), idx + 1, len(s2_callables))
+                return result
+        except Exception:
+            logger.warning("S2 task %d/%d failed", idx + 1, len(s2_callables), exc_info=True)
+        return []
+
+    # Submit S2 + OA tasks into the same thread-pool so they run concurrently.
+    max_workers = max(4, len(s2_callables) + len(oa_callables))
+    if not has_s2_key:
+        # No S2 key → run S2 sequentially in one thread to stay under 1 rps.
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            s2_future = executor.submit(_run_s2_sequential, s2_callables, budget, has_s2_key) if s2_callables else None
+            oa_futures = {executor.submit(fn): fn for fn in oa_callables}
+            if s2_future:
+                s2_result = s2_future.result()
+                if isinstance(s2_result, list):
+                    all_papers.extend(s2_result)
+            for future in as_completed(oa_futures):
+                try:
+                    result = future.result()
+                    if isinstance(result, list):
+                        all_papers.extend(result)
+                except Exception:
+                    pass
+    else:
+        # S2 key available → all S2 + OA tasks run in parallel.
+        def _call_one(fn: Callable[[], list[Paper]], label: str, idx: int, total: int) -> list[Paper]:
+            if budget and not budget.can_call_api():
+                logger.info("%s skipped task %d/%d (budget exhausted)", label, idx + 1, total)
+                return []
+            try:
+                r = fn()
+                if isinstance(r, list):
+                    if budget:
+                        budget.increment_api_calls()
+                    logger.info("%s retrieved %d papers (task %d/%d)", label, len(r), idx + 1, total)
+                    return r
+            except Exception:
+                logger.warning("%s task %d/%d failed", label, idx + 1, total, exc_info=True)
+            return []
+
+        s2_total = len(s2_callables)
+        oa_total = len(oa_callables)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures: dict[Any, None] = {}
+            for i, fn in enumerate(s2_callables):
+                futures[executor.submit(_call_one, fn, "S2", i, s2_total)] = None
+            for i, fn in enumerate(oa_callables):
+                futures[executor.submit(_call_one, fn, "OA", i, oa_total)] = None
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
+                    if isinstance(result, list):
+                        all_papers.extend(result)
+                except Exception:
+                    pass
+
+    edges = _build_edges(all_papers)
+    return all_papers, edges
+
+
+def _run_s2_sequential(
+    callables: list[Callable[[], list[Paper]]],
+    budget: BudgetController | None,
+    has_key: bool,
+) -> list[Paper]:
+    """Run S2 tasks sequentially with delay (for no-API-key rate limit)."""
+    s2_papers: list[Paper] = []
+    for i, fn in enumerate(callables):
+        if budget and not budget.can_call_api():
             break
-        if i > 0 and not has_s2_key:
+        if i > 0 and not has_key:
             time.sleep(S2_DELAY_SECONDS)
         try:
             result = fn()
             if isinstance(result, list):
-                all_papers.extend(result)
+                s2_papers.extend(result)
                 if budget:
                     budget.increment_api_calls()
-                logger.info("S2 retrieved %d papers (task %d/%d)", len(result), i + 1, len(s2_callables))
+                logger.info("S2 retrieved %d papers (task %d/%d)", len(result), i + 1, len(callables))
         except Exception:
-            logger.warning("S2 task %d/%d failed", i + 1, len(s2_callables), exc_info=True)
-
-    # OA: parallel (polite pool with mailto is generous)
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {executor.submit(fn): idx for idx, fn in enumerate(oa_callables)}
-        for future in as_completed(futures):
-            idx = futures[future]
-            if budget and not budget.can_call_api():
-                break
-            try:
-                result = future.result()
-                if isinstance(result, list):
-                    all_papers.extend(result)
-                    if budget:
-                        budget.increment_api_calls()
-                    logger.info("OA retrieved %d papers (task %d/%d)", len(result), idx + 1, len(oa_callables))
-            except Exception:
-                logger.warning("OA task %d/%d failed", idx + 1, len(oa_callables), exc_info=True)
-
-    edges = _build_edges(all_papers)
-    return all_papers, edges
+            logger.warning("S2 task %d/%d failed", i + 1, len(callables), exc_info=True)
+    return s2_papers
 
 
 def _build_english_queries(query_plan: QueryPlan) -> list[str]:

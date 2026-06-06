@@ -11,9 +11,12 @@ from __future__ import annotations
 
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+EMBEDDING_CONCURRENCY = 30
 
 
 def get_embedding(text: str) -> list[float] | None:
@@ -31,13 +34,13 @@ def get_embedding(text: str) -> list[float] | None:
 
 
 def batch_embeddings(texts: list[str]) -> list[list[float] | None]:
-    """Return embedding vectors for a batch of texts."""
+    """Return embedding vectors for a batch of texts via concurrent single-text calls."""
     provider = os.getenv("EMBEDDING_PROVIDER", "")
     if not provider:
         return [None] * len(texts)
 
     if provider == "dashscope":
-        return _dashscope_batch_embed(texts)
+        return _dashscope_concurrent_embed(texts)
     else:
         return [None] * len(texts)
 
@@ -73,33 +76,27 @@ def _dashscope_embed(text: str) -> list[float] | None:
     return None
 
 
-def _dashscope_batch_embed(texts: list[str]) -> list[list[float] | None]:
-    """DashScope supports batched input natively."""
-    import dashscope
-    from http import HTTPStatus
+def _dashscope_concurrent_embed(texts: list[str]) -> list[list[float] | None]:
+    """Embed all texts concurrently (each as a single-text API call).
 
-    api_key = os.getenv("EMBEDDING_API_KEY")
-    model = os.getenv("EMBEDDING_MODEL", "text-embedding-v4")
-    if not api_key:
-        return [None] * len(texts)
-
+    Uses a ThreadPoolExecutor with *EMBEDDING_CONCURRENCY* workers to
+    maximise throughput while staying within API rate limits.
+    """
     results: list[list[float] | None] = [None] * len(texts)
-    chunk_size = 10  # text-embedding-v4 batch limit
-    for offset in range(0, len(texts), chunk_size):
-        chunk = texts[offset: offset + chunk_size]
-        try:
-            resp = dashscope.TextEmbedding.call(
-                model=model,
-                input=chunk,
-                api_key=api_key,
-            )
-            if resp.status_code == HTTPStatus.OK:
-                embeddings = resp.output.get("embeddings", [])
-                for i, emb in enumerate(embeddings):
-                    results[offset + i] = list(emb.get("embedding", []))
-            else:
-                logger.error("DashScope batch embedding failed: %s - %s", resp.status_code, resp.message)
-        except Exception:
-            logger.error("DashScope batch embedding failed for chunk %d", offset, exc_info=True)
 
+    def _embed_one(index: int, text: str) -> tuple[int, list[float] | None]:
+        return index, _dashscope_embed(text)
+
+    with ThreadPoolExecutor(max_workers=EMBEDDING_CONCURRENCY) as executor:
+        futures = {executor.submit(_embed_one, i, t): i for i, t in enumerate(texts)}
+        for future in as_completed(futures):
+            try:
+                idx, emb = future.result()
+                results[idx] = emb
+            except Exception:
+                logger.warning("Embedding task failed for index %d", futures[future], exc_info=True)
+
+    ok = sum(1 for r in results if r is not None)
+    if ok < len(texts):
+        logger.info("Embedding: %d/%d succeeded", ok, len(texts))
     return results

@@ -67,13 +67,16 @@ def _append_paper_section(lines: list[str], papers: list[Paper]) -> None:
     for paper in papers:
         author_names = [author.get("name") or "" for author in paper.authors]
         authors = ", ".join([name for name in author_names if name]) or "Unknown"
+        relevance_display = paper.llm_relevance or "highly_relevant"
+        if paper.reranker_score is not None:
+            relevance_display = f"{relevance_display} / {paper.reranker_score:.2f}"
         lines.extend(
             [
                 f"## {paper.title} ({paper.year or 'Unknown'})\n",
                 f"- 作者：{authors}\n",
                 f"- Venue：{paper.venue or 'Unknown'}\n",
                 f"- 链接：{paper.url or 'N/A'}\n",
-                f"- 相关性：{paper.llm_relevance or 'highly_relevant'}\n",
+                f"- 相关性：{relevance_display}\n",
                 f"- 匹配理由：{paper.reason or '离线最小闭环暂未生成，当前按 query/venue/topic 命中归入结果集'}\n",
                 f"- 核心贡献：{paper.contribution or '离线最小闭环暂未生成，后续由精筛阶段补充'}\n",
                 f"- 摘要：{paper.abstract or 'N/A'}\n",

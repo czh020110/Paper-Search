@@ -123,7 +123,6 @@ def load_settings() -> Settings:
 
     runtime_config = {
         "semantic_scholar_api_key_set": bool(os.getenv("SEMANTIC_SCHOLAR_API_KEY")),
-        "openalex_api_key_set": bool(os.getenv("OPENALEX_API_KEY")),
         "llm_api_key_set": bool(os.getenv("LLM_API_KEY")),
         "embedding_api_key_set": bool(os.getenv("EMBEDDING_API_KEY")),
         "reranker_api_key_set": bool(os.getenv("RERANKER_API_KEY")),

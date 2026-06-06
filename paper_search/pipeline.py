@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from .budget import BudgetController
@@ -26,7 +27,13 @@ from .writers import write_outputs
 logger = logging.getLogger(__name__)
 
 
-def run_pipeline(query: str, backend: str, output_root: Path, settings: Settings) -> dict[str, Any]:
+def run_pipeline(
+    query: str,
+    backend: str,
+    output_root: Path,
+    settings: Settings,
+    on_stage: Callable[[str, str], None] | None = None,
+) -> dict[str, Any]:
     if backend not in ("mock", "live"):
         raise ValueError(f"Unsupported backend: {backend}. Choose 'mock' or 'live'.")
 
@@ -39,16 +46,27 @@ def run_pipeline(query: str, backend: str, output_root: Path, settings: Settings
     logger.info("Pipeline started", extra={"run_id": run_id, "stage": "pipeline_start"})
 
     budget = BudgetController(settings.budget_limits())
-    # Use LLM query understanding for live backend when API key is available
+
+    timings: dict[str, float] = {}
+
+    t0 = time.time()
     query_plan = build_query_plan(query, use_llm=(backend == "live"))
+    timings["query_understanding"] = (time.time() - t0) * 1000
+    _notify(on_stage, "query_understanding", "done")
 
     if backend == "mock":
+        t0 = time.time()
         retrieved_papers, raw_edges = retrieve_mock_papers(query_plan, fixtures_dir)
+        timings["initial_retrieval"] = (time.time() - t0) * 1000
         cache_hit_rate = 0.0
     else:
+        t0 = time.time()
         cache = CacheStore(settings.cache_dir)
         retrieved_papers, raw_edges = retrieve_live_papers(query_plan, cache=cache, budget=budget)
+        timings["initial_retrieval"] = (time.time() - t0) * 1000
         cache_hit_rate = cache.hit_rate()
+
+    _notify(on_stage, "initial_retrieval", "done")
 
     deduped_papers = _rank_papers(dedupe_papers(retrieved_papers))
 
@@ -62,22 +80,33 @@ def run_pipeline(query: str, backend: str, output_root: Path, settings: Settings
     # LangGraph's StateGraph.invoke() with mock data is pure overhead that
     # was causing a GC death spiral during test discovery.
     if backend == "live":
+        t0 = time.time()
         pool, snowball_edges = run_snowball(pool, query_plan, budget, cache=cache)
+        timings["snowball"] = (time.time() - t0) * 1000
     else:
         snowball_edges: list[dict[str, object]] = []
 
     # Coarse screening (S-006): BM25 + Embedding + Structure triple scoring
+    t0 = time.time()
     coarse_score(pool, query_plan)
+    timings["coarse"] = (time.time() - t0) * 1000
+    _notify(on_stage, "coarse", "done")
 
     # Medium screening (S-007): Reranker high-precision re-ranking
+    t0 = time.time()
     rerank(pool, query_plan)
+    timings["rerank"] = (time.time() - t0) * 1000
+    _notify(on_stage, "rerank", "done")
 
-    # Fine screening (S-008): LLM batch relevance judgment
+    # Fine screening (S-008): LLM concurrent per-paper relevance judgment
+    t0 = time.time()
     judge(pool, query_plan)
+    timings["judge"] = (time.time() - t0) * 1000
+    _notify(on_stage, "judge", "done")
 
     # Merge snowball edges with any existing raw edges
     all_edges = _merge_edges(raw_edges, snowball_edges)
-    selected_papers = pool.by_status("selected")
+    selected_papers = _rank_by_relevance(pool.by_status("selected"))
     evaluation = evaluate_query(query, selected_papers, fixtures_dir / "golden_set.json")
     graph_output = GraphOutput(
         query=query,
@@ -95,6 +124,7 @@ def run_pipeline(query: str, backend: str, output_root: Path, settings: Settings
         cache_hit_rate=cache_hit_rate,
         pool_summary=pool.summary(),
         budget_summary=budget.usage_summary(),
+        timings=timings,
     )
 
     output_files = _compute_output_file_paths(run_dir)
@@ -164,6 +194,15 @@ def _rank_papers(papers: list[Paper]) -> list[Paper]:
     )
 
 
+def _rank_by_relevance(papers: list[Paper]) -> list[Paper]:
+    """Sort selected papers: 高度相关 first, then by reranker_score desc."""
+    def _sort_key(p: Paper) -> tuple[int, float]:
+        rel_order = 0 if (p.llm_relevance or "").startswith("高度") else 1
+        score = -(p.reranker_score or 0.0)
+        return (rel_order, score)
+    return sorted(papers, key=_sort_key)
+
+
 def _merge_edges(raw_edges: list[dict[str, object]], snowball_edges: list[dict[str, object]]) -> list[dict[str, object]]:
     """Merge edges from initial retrieval and snowball phases, deduplicating by (source, target, type)."""
     seen: set[tuple[str, str, str]] = set()
@@ -191,16 +230,19 @@ def _build_stage_metrics(
     cache_hit_rate: float = 0.0,
     pool_summary: dict[str, int] | None = None,
     budget_summary: dict[str, Any] | None = None,
+    timings: dict[str, float] | None = None,
 ) -> dict[str, object]:
     api_calls = budget_summary.get("api_calls_used", 0) if budget_summary else 0
+    t = timings or {}
+    total_ms = sum(t.values())
     return {
         "query_understanding": {
-            "latency_ms": 0,
+            "latency_ms": round(t.get("query_understanding", 0), 1),
             "sub_queries_count": len(query_plan.sub_queries_for_retrieval),
             "api_calls": 0,
         },
         "initial_retrieval": {
-            "latency_ms": 0,
+            "latency_ms": round(t.get("initial_retrieval", 0), 1),
             "seed_pool_size": deduped_count,
             "api_calls": api_calls,
             "cache_hit_rate": cache_hit_rate,
@@ -209,14 +251,18 @@ def _build_stage_metrics(
             "minimum_recall": evaluation.get("recall"),
             "backend": backend,
         },
+        "snowball": {"latency_ms": round(t.get("snowball", 0), 1)},
+        "coarse": {"latency_ms": round(t.get("coarse", 0), 1)},
+        "rerank": {"latency_ms": round(t.get("rerank", 0), 1)},
+        "judge": {"latency_ms": round(t.get("judge", 0), 1)},
         "result_format": {
-            "latency_ms": 0,
+            "latency_ms": round(t.get("result_format", 0), 1),
             "output_count": selected_count,
             "graph_node_count": len(graph_output.nodes),
             "graph_edge_count": len(graph_output.edges),
         },
         "overall": {
-            "total_latency_ms": 0,
+            "total_latency_ms": round(total_ms, 1),
             "total_api_calls": api_calls,
             "total_token_usage": {"prompt": 0, "completion": 0, "total": 0},
             "precision": evaluation.get("precision"),
@@ -225,5 +271,14 @@ def _build_stage_metrics(
             "cache_hit_rate": cache_hit_rate,
             "pool_status_summary": pool_summary or {},
             "budget": budget_summary or {},
+            "stage_timings": {k: round(v, 1) for k, v in t.items()},
         },
     }
+
+def _notify(on_stage: Callable[[str, str], None] | None, stage: str, status: str) -> None:
+    """Call the optional progress callback if provided."""
+    if on_stage is not None:
+        try:
+            on_stage(stage, status)
+        except Exception:
+            pass
