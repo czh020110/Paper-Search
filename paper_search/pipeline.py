@@ -39,7 +39,8 @@ def run_pipeline(query: str, backend: str, output_root: Path, settings: Settings
     logger.info("Pipeline started", extra={"run_id": run_id, "stage": "pipeline_start"})
 
     budget = BudgetController(settings.budget_limits())
-    query_plan = build_query_plan(query)
+    # Use LLM query understanding for live backend when API key is available
+    query_plan = build_query_plan(query, use_llm=(backend == "live"))
 
     if backend == "mock":
         retrieved_papers, raw_edges = retrieve_mock_papers(query_plan, fixtures_dir)

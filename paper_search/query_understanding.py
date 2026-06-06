@@ -16,17 +16,20 @@ VENUE_KEYWORDS = ["cvpr", "neurips", "iclr", "acl", "emnlp"]
 def build_query_plan(query: str, use_llm: bool = False) -> QueryPlan:
     """Convert a natural language query into a structured QueryPlan.
 
-    When *use_llm* is True and ``LLM_API_KEY`` is configured, delegates to
-    an LLM via LangChain for keyword extraction and translation.  Otherwise
-    uses the rule-based path (fast, deterministic, offline).
+    When *use_llm* is True, delegates to an LLM via LangChain.  Raises
+    ``RuntimeError`` if ``LLM_API_KEY`` is not configured so the caller
+    never silently falls back to a lower-quality path.
+
+    When *use_llm* is False, uses the rule-based path (for tests/mock).
     """
     if use_llm:
         import os
-        if os.getenv("LLM_API_KEY"):
-            try:
-                return build_query_plan_llm(query)
-            except Exception:
-                logger.warning("LLM query understanding failed, falling back to rule-based", exc_info=True)
+        if not os.getenv("LLM_API_KEY"):
+            raise RuntimeError(
+                "LLM query understanding requested but LLM_API_KEY is not set. "
+                "Set LLM_API_KEY in .env or run with --backend mock for offline testing."
+            )
+        return build_query_plan_llm(query)
 
     return _build_query_plan_rules(query)
 
@@ -141,6 +144,12 @@ def _build_query_plan_rules(query: str) -> QueryPlan:
 
 
 def _extract_keywords(query: str) -> list[str]:
+    """Tokenize and expand keywords for rule-based query understanding.
+
+    Only used when ``use_llm=False`` (mock/testing).  The live pipeline
+    always uses :func:`build_query_plan_llm` which produces English keywords
+    via LLM translation — no hardcoded mapping is involved in production.
+    """
     tokens = [token.strip() for token in re.split(r"[，,、\s]+", query) if token.strip()]
     expanded = list(tokens)
 
@@ -166,6 +175,10 @@ def _extract_keywords(query: str) -> list[str]:
 
 
 def _extract_methodologies(query: str) -> list[str]:
+    """Extract methodology hints for rule-based query understanding.
+
+    Only used when ``use_llm=False`` (mock/testing).
+    """
     candidates: list[str] = []
     normalized = query.lower()
     if "强化学习" in query or "reinforcement" in normalized or "rl" in normalized:
