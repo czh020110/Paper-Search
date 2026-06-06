@@ -4,8 +4,6 @@ import logging
 import re
 from typing import Any
 
-from langchain_core.messages import HumanMessage, SystemMessage
-
 from .contracts import IntentAnalysis, QueryPlan
 
 logger = logging.getLogger(__name__)
@@ -36,6 +34,7 @@ def build_query_plan(query: str, use_llm: bool = False) -> QueryPlan:
 
 def build_query_plan_llm(query: str) -> QueryPlan:
     """Use LangChain + LLM to convert natural language query to structured QueryPlan."""
+    from langchain_core.messages import HumanMessage, SystemMessage
     from langchain_core.output_parsers import JsonOutputParser
 
     from .llm import get_fast_llm

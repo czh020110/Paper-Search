@@ -48,9 +48,9 @@ def classify_httpx_error(error: Exception) -> PaperSearchError:
     if isinstance(error, httpx.TimeoutException):
         return ApiTimeoutError(str(error))
     if isinstance(error, httpx.HTTPStatusError):
-        status = error.response.status_code
+        status = error.response.status_code  # type: ignore[union-attr]
         if status == 429:
-            retry_after = error.response.headers.get("retry-after")
+            retry_after = error.response.headers.get("retry-after")  # type: ignore[union-attr]
             seconds = float(retry_after) if retry_after else None
             return ApiRateLimitError(str(error), retry_after=seconds)
         return ApiError(str(error), status_code=status)

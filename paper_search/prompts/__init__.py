@@ -128,6 +128,79 @@ QUERY_UNDERSTANDING_SCHEMA: dict = {
     ],
 }
 
+JUDGE_PROMPT = """\
+角色：严谨的学术领域专家。根据【原始学术查询】评估以下【候选论文列表】的相关性。
+
+【用户原始学术查询】：
+{query}
+
+【候选论文列表】：
+{papers_json}
+
+【任务指令】：
+1. 对比查询意图与论文内容，判断是否满足主题、方法、时间与 venue 要求。
+2. venue 字段缺失或写法不一致时，不直接判负，需结合标题、摘要与其他元数据综合判断。
+3. 分类结果只能在 [高度相关, 部分相关, 不相关] 中选择。
+4. 输出一句判定理由与一句主要贡献。
+5. 严格输出 JSON 数组，不添加额外说明。
+
+输出格式：
+[
+  {{
+    "paper_id": "<传入的论文ID>",
+    "relevance": "<高度相关/部分相关/不相关>",
+    "reason": "<判定理由（一句）>",
+    "contribution": "<论文主要贡献（一句）>"
+  }}
+]
+"""
+
+JUDGE_SCHEMA: dict = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "paper_id": {"type": "string"},
+            "relevance": {"type": "string", "enum": ["高度相关", "部分相关", "不相关"]},
+            "reason": {"type": "string"},
+            "contribution": {"type": "string"},
+        },
+        "required": ["paper_id", "relevance", "reason", "contribution"],
+    },
+}
+
+RERANK_PROMPT = """\
+You are an academic relevance scorer. Given a user query and a list of candidate papers,
+score each paper's relevance to the query on a 0-10 scale.
+
+Scoring guidelines:
+- 8-10: Directly addresses the query's core topic and methodology
+- 5-7: Partially relevant — shares topic or method but not both
+- 1-4: Tangentially related
+- 0: Not relevant
+
+【用户查询】：
+{query}
+
+【候选论文列表】：
+{papers_json}
+
+Return ONLY a JSON array of objects with paper_id and score:
+[{{"paper_id": "<id>", "score": <0-10>}}]
+"""
+
+RERANK_SCHEMA: dict = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "paper_id": {"type": "string"},
+            "score": {"type": "number", "minimum": 0, "maximum": 10},
+        },
+        "required": ["paper_id", "score"],
+    },
+}
+
 PROMPT_REGISTRY: dict[str, dict] = {
     "query_understanding": {
         "name": "query_understanding",
@@ -135,5 +208,19 @@ PROMPT_REGISTRY: dict[str, dict] = {
         "description": "Convert natural language academic query to structured QueryPlan JSON",
         "template": QUERY_UNDERSTANDING_PROMPT,
         "expected_schema": QUERY_UNDERSTANDING_SCHEMA,
+    },
+    "judge": {
+        "name": "judge",
+        "version": "v1",
+        "description": "Batch relevance judgment: 高度相关/部分相关/不相关 + reason + contribution",
+        "template": JUDGE_PROMPT,
+        "expected_schema": JUDGE_SCHEMA,
+    },
+    "rerank": {
+        "name": "rerank",
+        "version": "v1",
+        "description": "LLM-based pairwise relevance scoring (0-10 scale)",
+        "template": RERANK_PROMPT,
+        "expected_schema": RERANK_SCHEMA,
     },
 }

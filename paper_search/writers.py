@@ -33,8 +33,8 @@ def write_outputs(
 
 
 def _render_markdown(query_plan: QueryPlan, papers: list[Paper]) -> str:
-    high_relevance = [paper for paper in papers if (paper.llm_relevance or "highly_relevant") == "highly_relevant"]
-    partial_relevance = [paper for paper in papers if (paper.llm_relevance or "highly_relevant") == "partially_relevant"]
+    high_relevance = [paper for paper in papers if paper.llm_relevance in ("高度相关", "highly_relevant")]
+    partial_relevance = [paper for paper in papers if paper.llm_relevance in ("部分相关", "partially_relevant")]
     lines = [
         "# 查询摘要\n",
         f"- 原始查询：{query_plan.original_query}\n",

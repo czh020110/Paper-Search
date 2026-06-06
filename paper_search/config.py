@@ -19,6 +19,10 @@ class Settings:
     llm_api_base: str
     llm_model: str
     llm_fast_model: str
+    embedding_provider: str
+    embedding_model: str
+    reranker_provider: str
+    reranker_model: str
     runtime_config: dict[str, Any]
     experiment_config: dict[str, Any]
 
@@ -41,6 +45,10 @@ class Settings:
                 "llm_api_base": self.llm_api_base,
                 "llm_model": self.llm_model,
                 "llm_fast_model": self.llm_fast_model,
+                "embedding_provider": self.embedding_provider,
+                "embedding_model": self.embedding_model,
+                "reranker_provider": self.reranker_provider,
+                "reranker_model": self.reranker_model,
             },
             "experiment": self.experiment_config,
         }
@@ -81,6 +89,10 @@ def load_settings() -> Settings:
     llm_api_base = _resolve("llm_api_base", "LLM_API_BASE", private, "https://api.openai.com/v1")
     llm_model = _resolve("llm_model", "LLM_MODEL", private, "gpt-4o-mini")
     llm_fast_model = _resolve("llm_fast_model", "LLM_FAST_MODEL", private, llm_model)
+    embedding_provider = _resolve("embedding_provider", "EMBEDDING_PROVIDER", private, "")
+    embedding_model = _resolve("embedding_model", "EMBEDDING_MODEL", private, "text-embedding-v4")
+    reranker_provider = _resolve("reranker_provider", "RERANKER_PROVIDER", private, "")
+    reranker_model = _resolve("reranker_model", "RERANKER_MODEL", private, "qwen3-rerank")
 
     experiment_config = {
         "query_understanding": {
@@ -113,6 +125,8 @@ def load_settings() -> Settings:
         "semantic_scholar_api_key_set": bool(os.getenv("SEMANTIC_SCHOLAR_API_KEY")),
         "openalex_api_key_set": bool(os.getenv("OPENALEX_API_KEY")),
         "llm_api_key_set": bool(os.getenv("LLM_API_KEY")),
+        "embedding_api_key_set": bool(os.getenv("EMBEDDING_API_KEY")),
+        "reranker_api_key_set": bool(os.getenv("RERANKER_API_KEY")),
     }
 
     return Settings(
@@ -122,6 +136,10 @@ def load_settings() -> Settings:
         llm_api_base=llm_api_base,
         llm_model=llm_model,
         llm_fast_model=llm_fast_model,
+        embedding_provider=embedding_provider,
+        embedding_model=embedding_model,
+        reranker_provider=reranker_provider,
+        reranker_model=reranker_model,
         runtime_config=runtime_config,
         experiment_config=experiment_config,
     )

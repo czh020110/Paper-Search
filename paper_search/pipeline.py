@@ -26,7 +26,7 @@ from .writers import write_outputs
 logger = logging.getLogger(__name__)
 
 
-def run_pipeline(query: str, backend: str, output_root: Path, settings: Settings) -> dict[str, object]:
+def run_pipeline(query: str, backend: str, output_root: Path, settings: Settings) -> dict[str, Any]:
     if backend not in ("mock", "live"):
         raise ValueError(f"Unsupported backend: {backend}. Choose 'mock' or 'live'.")
 
