@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Query, Request
+from fastapi import Body, FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 from .config import load_settings
@@ -29,7 +29,7 @@ OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
 # ============================ API Endpoints ============================ #
 
 
-def _api_key_status() -> dict[str, bool]:
+def _api_key_status() -> dict[str, Any]:
     return {
         "llm": bool(os.getenv("LLM_API_KEY")),
         "semantic_scholar": bool(os.getenv("SEMANTIC_SCHOLAR_API_KEY")),
@@ -39,9 +39,22 @@ def _api_key_status() -> dict[str, bool]:
     }
 
 
+@app.get("/api/config/validate", tags=["配置"], summary="检查必需配置是否完整")
+def api_validate_config() -> dict[str, Any]:
+    return _is_config_ready()
+
+
 @app.get("/api/status", tags=["系统"], summary="API Key 配置状态")
 def api_status() -> dict[str, Any]:
-    return {"keys": _api_key_status(), "backend": "live"}
+    keys = _api_key_status()
+    # embedding badge: grey=disabled, red=missing, green=ok
+    embedding_enabled = os.getenv("EMBEDDING_ENABLED", "true").lower() not in ("0", "false", "no")
+    emb_has_key = bool(os.getenv("EMBEDDING_API_KEY"))
+    if not embedding_enabled:
+        keys["embedding"] = "disabled"
+    else:
+        keys["embedding"] = emb_has_key
+    return {"keys": keys, "backend": "live", "config_ready": _is_config_ready()["ready"]}
 
 
 @app.get("/api/search", tags=["检索"], summary="检索论文（GET）")
@@ -151,6 +164,188 @@ async def api_search_stream(q: str = Query(..., description="自然语言查询"
     return StreamingResponse(_stream(), media_type="text/event-stream; charset=utf-8")
 
 
+# ============================ Config Endpoints ============================ #
+
+
+@app.get("/api/config", tags=["配置"], summary="获取当前配置")
+def api_get_config() -> dict[str, Any]:
+    """Return all runtime-configurable settings with their current values."""
+    return _collect_config()
+
+
+@app.post("/api/config", tags=["配置"], summary="更新配置（写入 .env）")
+async def api_update_config(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Update one or more config values in the .env file and return the new state."""
+    allowed = _config_schema()
+    updated: dict[str, str] = {}
+    for key, value in body.items():
+        if key in allowed and value is not None:
+            updated[key] = str(value)
+    if updated:
+        _write_env(updated)
+        # Also update os.environ so the running process picks up changes immediately
+        for k, v in updated.items():
+            os.environ[k] = v
+    return {"ok": True, "config": _collect_config()}
+
+
+def _config_schema() -> dict[str, dict[str, Any]]:
+    """Return the set of writable config keys with their types and defaults."""
+    return {
+        # Model / Provider
+        "LLM_PROVIDER": {"type": "select", "default": "openai", "options": ["openai", "dashscope"]},
+        "LLM_MODEL": {"type": "string", "default": "gpt-4o-mini"},
+        "LLM_FAST_MODEL": {"type": "string", "default": "gpt-4o-mini"},
+        "OPENAI_BASE_URL": {"type": "string", "default": "https://api.openai.com/v1"},
+        "LLM_API_KEY": {"type": "string", "default": ""},
+        "LLM_THINKING": {"type": "select", "default": "none", "options": ["off", "none", "minimal", "low", "medium", "high", "xhigh"]},
+        "SEMANTIC_SCHOLAR_API_KEY": {"type": "string", "default": ""},
+        "OPENALEX_MAILTO": {"type": "string", "default": ""},
+        "EMBEDDING_PROVIDER": {"type": "select", "default": "", "options": ["", "dashscope"]},
+        "EMBEDDING_MODEL": {"type": "string", "default": "text-embedding-v4"},
+        "EMBEDDING_API_KEY": {"type": "string", "default": ""},
+        "RERANKER_PROVIDER": {"type": "select", "default": "", "options": ["", "dashscope"]},
+        "RERANKER_MODEL": {"type": "string", "default": "qwen3-rerank"},
+        "RERANKER_API_KEY": {"type": "string", "default": ""},
+        # Coarse screening
+        "COARSE_POOL_SKIP_THRESHOLD": {"type": "int", "default": "40"},
+        "COARSE_EMBEDDING_MIN_SIMILARITY": {"type": "float", "default": "0.35"},
+        "COARSE_WEIGHT_BM25": {"type": "float", "default": "0.35"},
+        "COARSE_WEIGHT_EMBEDDING": {"type": "float", "default": "0.35"},
+        "COARSE_WEIGHT_STRUCTURE": {"type": "float", "default": "0.30"},
+        "COARSE_WEIGHT_BM25_FALLBACK": {"type": "float", "default": "0.60"},
+        "COARSE_WEIGHT_STRUCTURE_FALLBACK": {"type": "float", "default": "0.40"},
+        "COARSE_RELATIVE_THRESHOLD_FACTOR": {"type": "float", "default": "0.3"},
+        # Reranker
+        "RERANKER_TOP_K_FALLBACK": {"type": "int", "default": "30"},
+        "RERANKER_RELATIVE_THRESHOLD_FACTOR": {"type": "float", "default": "0.7"},
+        # Embedding
+        "EMBEDDING_CONCURRENCY": {"type": "int", "default": "10"},
+        "EMBEDDING_RPS_LIMIT": {"type": "int", "default": "15"},
+        "EMBEDDING_ENABLED": {"type": "bool", "default": "true"},
+        # Judge
+        "JUDGE_CONCURRENCY": {"type": "int", "default": "100"},
+        "JUDGE_WAVE_CAP": {"type": "int", "default": "5000"},
+    }
+
+
+_REQUIRED_CONFIG_KEYS = [
+    "LLM_MODEL", "LLM_FAST_MODEL", "LLM_API_KEY",
+    "RERANKER_API_KEY", "RERANKER_MODEL",
+    "EMBEDDING_API_KEY", "EMBEDDING_MODEL",
+]
+
+
+def _is_config_ready() -> dict[str, Any]:
+    """Check whether all required config values are set.
+
+    Returns a dict with ``ready`` (bool) and ``missing`` (list[str]).
+    ``EMBEDDING_*`` are only required when ``EMBEDDING_ENABLED`` is true.
+    """
+    missing: list[str] = []
+    for key in _REQUIRED_CONFIG_KEYS:
+        val = os.getenv(key, "").strip()
+        if not val:
+            missing.append(key)
+    # Embedding is only required if enabled
+    embedding_enabled = os.getenv("EMBEDDING_ENABLED", "true").lower() not in ("0", "false", "no")
+    if not embedding_enabled:
+        missing = [m for m in missing if not m.startswith("EMBEDDING_")]
+    ready = len(missing) == 0
+    return {"ready": ready, "missing": missing}
+
+
+_CONFIG_HELP: dict[str, str] = {
+    "LLM_PROVIDER": "LLM 提供商。OpenAI(兼容) 使用 reasoning_effort 控制思考；DashScope 使用 enable_thinking。示例：openai",
+    "LLM_MODEL": "LLM 模型名称，用于查询理解和精筛。示例：qwen3.6-plus / gpt-4o-mini",
+    "LLM_FAST_MODEL": "轻量 LLM 模型，用于快速任务。不配置则回退到 LLM_MODEL。示例：qwen3.6-flash-nothinking",
+    "OPENAI_BASE_URL": "OpenAI 兼容 API 端点 URL。留空默认使用 OpenAI 官方节点 (https://api.openai.com/v1)。示例：https://api.openai.com/v1",
+    "LLM_API_KEY": "LLM API 认证密钥。示例：sk-...",
+    "LLM_THINKING": "控制 LLM 思考/推理深度。none=关闭，off=不传参(API默认)，minimal~xhigh=递增推理强度。DashScope 仅支持开/关。",
+    "SEMANTIC_SCHOLAR_API_KEY": "S2 API Key（可选）。有 key 可提升速率限制，留空使用公共端点。示例：40字符字符串",
+    "OPENALEX_MAILTO": "OpenAlex 礼貌邮箱（可选）。填入邮箱可进入礼貌池获得更稳定服务。示例：your-email@example.com",
+    "EMBEDDING_PROVIDER": "Embedding 服务提供商。目前支持 dashscope。留空则跳过路 B 打分。示例：dashscope",
+    "EMBEDDING_MODEL": "Embedding 模型名称。示例：text-embedding-v4",
+    "EMBEDDING_API_KEY": "Embedding API 密钥。示例：sk-...",
+    "RERANKER_PROVIDER": "Reranker 服务提供商。留空则跳过重排序。示例：dashscope",
+    "RERANKER_MODEL": "Reranker 模型名称。示例：qwen3-rerank",
+    "RERANKER_API_KEY": "Reranker API 密钥。示例：sk-...",
+    "COARSE_POOL_SKIP_THRESHOLD": "候选池 ≤N 篇时跳过粗筛直接透传。示例：40",
+    "COARSE_EMBEDDING_MIN_SIMILARITY": "余弦相似度硬底线。低于此值的论文直接排除。范围 0~1。示例：0.35",
+    "COARSE_WEIGHT_BM25": "三路融合中 BM25 的权重。有 Embedding 时使用。示例：0.35",
+    "COARSE_WEIGHT_EMBEDDING": "三路融合中 Embedding 的权重。示例：0.35",
+    "COARSE_WEIGHT_STRUCTURE": "三路融合中 Structure 的权重。示例：0.30",
+    "COARSE_WEIGHT_BM25_FALLBACK": "无 Embedding 时 BM25 的降级权重。示例：0.60",
+    "COARSE_WEIGHT_STRUCTURE_FALLBACK": "无 Embedding 时 Structure 的降级权重。示例：0.40",
+    "COARSE_RELATIVE_THRESHOLD_FACTOR": "综合分截断因子。threshold = mean × factor。示例：0.3",
+    "RERANKER_TOP_K_FALLBACK": "重排序 Top-K 保底数量。至少保留这么多篇。示例：30",
+    "RERANKER_RELATIVE_THRESHOLD_FACTOR": "重排序相对阈值因子。threshold = mean × factor。示例：0.7",
+    "EMBEDDING_CONCURRENCY": "Embedding 并发 worker 数。过大触发 API 限流。示例：10",
+    "EMBEDDING_RPS_LIMIT": "Embedding API 每秒最大请求数。token bucket 限流。示例：15",
+    "EMBEDDING_ENABLED": "是否启用 Embedding 稠密检索。关闭后三路退化为 BM25+Structure。",
+    "JUDGE_CONCURRENCY": "精筛 LLM 并发调用数。示例：100",
+    "JUDGE_WAVE_CAP": "精筛单次 wave 处理上限。超过此数量分批处理。示例：5000",
+}
+
+
+def _collect_config() -> dict[str, Any]:
+    """Gather current config values from env, falling back to defaults.
+
+    Returns a dict where each value is either the raw env value or an object
+    like ``{"value": "...", "options": [...]}`` for select-type keys so the
+    frontend knows how to render them.  Includes ``help`` text and ``required``
+    flag for each key.
+    """
+    schema = _config_schema()
+    required = set(_REQUIRED_CONFIG_KEYS)
+    validate = _is_config_ready()
+    result: dict[str, Any] = {}
+    for key, spec in schema.items():
+        raw = os.getenv(key)
+        val = raw if raw is not None else spec["default"]
+        entry: dict[str, Any] = {
+            "value": val,
+            "help": _CONFIG_HELP.get(key, ""),
+            "required": key in required,
+        }
+        if spec["type"] == "select":
+            entry["options"] = spec.get("options", [])
+        result[key] = entry
+    result["_validate"] = validate
+    return result
+
+
+def _env_path() -> Path:
+    return Path.cwd() / ".env"
+
+
+def _write_env(updates: dict[str, str]) -> None:
+    """Write config updates to the .env file, preserving existing keys.
+
+    Keys that already exist in .env are updated in-place; new keys are
+    appended.  Comment lines and blank lines are preserved.
+    """
+    env_file = _env_path()
+    lines: list[str] = []
+    seen: set[str] = set()
+    if env_file.is_file():
+        for line in env_file.read_text(encoding="utf-8").splitlines(keepends=True):
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#"):
+                if "=" in stripped:
+                    key = stripped.split("=", 1)[0].strip()
+                    if key in updates:
+                        lines.append(f'{key}={updates[key]}\n')
+                        seen.add(key)
+                        continue
+            lines.append(line if line.endswith("\n") else line + "\n")
+    # Append keys not yet seen
+    for key, value in updates.items():
+        if key not in seen:
+            lines.append(f"{key}={value}\n")
+    env_file.write_text("".join(lines), encoding="utf-8")
+
+
 # ============================ Web Page ============================ #
 
 
@@ -201,20 +396,95 @@ _SEARCH_PAGE_HTML = """<!DOCTYPE html>
   .badge-year { background: #f5f5f5; color: #616161; }
   /* Tooltip — pops BELOW the trigger so it's never obscured by the stats bar */
   .hover-tip { position: relative; display: inline-block; }
-  .hover-tip .tip-popup { display: none; position: absolute; top: 100%; left: 0; background: #1a1a2e; color: #fff; padding: 10px 14px; border-radius: 6px; font-size: 13px; width: 380px; max-height: 220px; overflow-y: auto; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,0.2); line-height: 1.5; }
-  .tip-popup::-webkit-scrollbar { width: 6px; }
-  .tip-popup::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.3); border-radius: 3px; }
+  .hover-tip .tip-popup { display: none; position: absolute; top: 100%; left: 0; background: #1a1a2e; color: #fff; padding: 10px 14px; border-radius: 6px; font-size: 13px; width: 380px; max-height: 220px; overflow-y: auto; overflow-x: hidden; word-break: break-all; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,0.2); line-height: 1.5; }
+  .tip-popup::-webkit-scrollbar { width: 4px; }
+  .tip-popup::-webkit-scrollbar-track { background: transparent; }
+  .tip-popup::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.25); border-radius: 2px; }
   .hover-tip:hover .tip-popup, .tip-popup:hover { display: block; }
   .tip-popup .tip-label { color: #a0c4ff; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
   .tooltip-trigger { cursor: help; border-bottom: 1px dotted #999; display: inline-block; }
   .error { color: #d32f2f; background: #fdeaea; padding: 12px; border-radius: 6px; }
   .api-link { font-size: 13px; color: #888; margin-top: 32px; }
   .api-link a { color: #1a1a2e; }
+  /* Gear button — fixed top-right */
+  .gear-btn { position: fixed; top: 16px; right: 16px; width: 40px; height: 40px; border-radius: 8px; background: #9e9e9e; color: #fff; border: none; font-size: 20px; cursor: pointer; display: flex; align-items: center; justify-content: center; z-index: 200; }
+  .gear-btn:hover { background: #757575; }
+  /* Modal overlay */
+  .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 300; align-items: center; justify-content: center; }
+  .modal-overlay.show { display: flex; }
+  .modal { background: #fff; border-radius: 12px; padding: 24px; max-width: 600px; width: 90%; max-height: 80vh; overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.2); }
+  .modal::-webkit-scrollbar { width: 4px; }
+  .modal::-webkit-scrollbar-thumb { background: #ccc; border-radius: 2px; }
+  .modal h2 { margin-top: 0; color: #1a1a2e; }
+  .modal h3 { color: #1a1a2e; font-size: 14px; margin: 16px 0 8px; padding-top: 12px; border-top: 1px solid #eee; }
+  .modal h3:first-of-type { border-top: none; padding-top: 0; }
+  .modal .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 6px; }
+  .modal label { font-size: 12px; color: #666; display: block; margin-bottom: 2px; }
+  .modal input, .modal select { width: 100%; padding: 6px 8px; font-size: 13px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
+  .modal input[type="checkbox"] { width: auto; margin-left: 4px; }
+  .modal .actions { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
+  .modal .actions button { padding: 8px 20px; font-size: 14px; }
+  .modal .btn-secondary { background: #e0e0e0; color: #333; }
+  .modal .btn-secondary:hover { background: #ccc; }
+  .modal .toast { display: none; position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #2e7d32; color: #fff; padding: 10px 24px; border-radius: 8px; font-size: 14px; z-index: 400; }
+  .modal .toast.show { display: block; }
+  /* Help icon beside config field labels */
+  .help-icon { display: inline-block; margin-left: 4px; width: 16px; height: 16px; border-radius: 50%; background: #e0e0e0; color: #666; font-size: 10px; font-weight: bold; cursor: default; text-align: center; line-height: 16px; vertical-align: top; position: relative; }
+  .help-icon:hover { background: #bdbdbd; }
+  .help-icon-missing { background: #fdeaea; color: #d32f2f; }
+  .help-icon-missing:hover { background: #f5c6c6; }
+  .help-icon-ok { background: #e8f5e9; color: #2e7d32; }
+  .help-icon-ok:hover { background: #c8e6c9; }
+  /* Help tooltip — shows below the icon */
+  .help-icon .help-tip { display: none; position: absolute; top: 100%; left: 0; background: #1a1a2e; color: #fff; padding: 6px 10px; border-radius: 6px; font-size: 12px; width: 260px; max-height: 160px; overflow-y: auto; z-index: 500; box-shadow: 0 4px 12px rgba(0,0,0,0.2); line-height: 1.4; font-weight: normal; white-space: normal; text-align: left; margin-top: 4px; }
+  .help-icon .help-tip::-webkit-scrollbar { width: 4px; }
+  .help-icon .help-tip::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.25); border-radius: 2px; }
+  .help-icon:hover .help-tip, .help-tip:hover { display: block; }
 </style>
 </head>
 <body>
+<button class="gear-btn" onclick="toggleConfig()" title="配置">⚙</button>
 <h1>📄 Paper Search</h1>
-<p class="desc">输入自然语言查询，自动完成查询理解、多源检索、粗筛、重排序与精筛。</p>
+<p class="desc">输入自然语言查询，自动完成查询理解、多源检索、粗筛、重排序与精筛。<span class="hover-tip" style="display:inline-block;vertical-align:middle"><span class="tooltip-trigger" style="font-size:14px;cursor:default">❓</span><span class="tip-popup" style="width:520px;max-height:420px;font-size:12px;line-height:1.6">
+<b>🔍 查询理解</b><br>
+调用 <b>LLM_FAST_MODEL</b> 将自然语言转为结构化 QueryPlan JSON。<br>
+使用 <b>with_structured_output</b> + Pydantic 强制输出 schema。<br>
+思考程度由 <b>LLM_THINKING</b> 控制。<br>
+API: <b>LLM_PROVIDER</b> → <b>OPENAI_BASE_URL</b><br>
+输出: query_type, hard_filters, ranking_signals, semantic_queries, sub_queries_for_retrieval, api_payload_translation<br><br>
+
+<b>📡 多源检索</b><br>
+对 sub_queries_for_retrieval 逐条调用 <b>Semantic Scholar</b> + <b>OpenAlex</b> API。<br>
+可选参数: <b>SEMANTIC_SCHOLAR_API_KEY</b>（有 key 提升限速），<b>OPENALEX_MAILTO</b>（礼貌池）<br>
+navigational 查询 → 标题精确匹配；semantic → 多角度语义扩展；metadata → 优先消费 api_payload_translation<br><br>
+
+<b>❄️ 滚雪球(当前只占位，后续实现)</b><br>
+LLM 驱动 query evolution + 选择性引文扩展。<br>
+调用 <b>LLM_FAST_MODEL</b> 提取新关键词 → API 补召回 → Reranker/LLM 高分论文做双向引文追踪。<br>
+收敛条件: 重叠率 &gt;70%、无新关键词、最大轮数 3 或预算耗尽（当前为桩模块，跳过）<br><br>
+
+<b>🔢 粗筛</b>（候选池 &gt; <b>COARSE_POOL_SKIP_THRESHOLD</b>=40 时触发）<br>
+三路混合打分（min-max 归一化 + 加权融合）:<br>
+路A BM25: rank-bm25 关键词匹配<br>
+路B Embedding: <b>EMBEDDING_PROVIDER</b>(<b>EMBEDDING_MODEL</b>) 余弦相似度<br>
+路C Structure: 年份接近度 + log1p(引用数) + venue 模糊命中<br>
+权重: BM25=<b>COARSE_WEIGHT_BM25</b> Embedding=<b>COARSE_WEIGHT_EMBEDDING</b> Structure=<b>COARSE_WEIGHT_STRUCTURE</b><br>
+降级权重: BM25=<b>COARSE_WEIGHT_BM25_FALLBACK</b> Structure=<b>COARSE_WEIGHT_STRUCTURE_FALLBACK</b><br>
+硬底线: cosine_sim &lt; <b>COARSE_EMBEDDING_MIN_SIMILARITY</b>=0.35 → 直接排除<br>
+截断: combined &lt; mean × <b>COARSE_RELATIVE_THRESHOLD_FACTOR</b>=0.3 → 排除<br>
+Embedding 并发: <b>EMBEDDING_CONCURRENCY</b>=10 workers, RPS 限速: <b>EMBEDDING_RPS_LIMIT</b>=15<br>
+开关: <b>EMBEDDING_ENABLED</b><br><br>
+
+<b>🎯 重排序</b><br>
+调用 <b>RERANKER_PROVIDER</b>(<b>RERANKER_MODEL</b>) DashScope qwen3-rerank API。<br>
+保底 Top-<b>RERANKER_TOP_K_FALLBACK</b>=30 篇 + 相对阈值 mean × <b>RERANKER_RELATIVE_THRESHOLD_FACTOR</b>=0.7。<br>
+无 RERANKER_PROVIDER 时 pass-through 全量透传。<br><br>
+
+<b>⚖️ 精筛</b><br>
+<b>JUDGE_CONCURRENCY</b>=100 并发逐篇调用 <b>LLM_FAST_MODEL</b> 三分类判定。<br>
+每篇 1 次 LLM 调用 → 高度相关/部分相关/不相关 + 理由 + 贡献。<br>
+单波上限 <b>JUDGE_WAVE_CAP</b>=5000 篇。<br>
+无 <b>LLM_API_KEY</b> 时报错，不静默回退。</span></span></p>
 
 <div id="key-status" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px"></div>
 
@@ -241,14 +511,22 @@ const STAGE_SKIPPED = new Set(['snowball']);  // snowball is stubs — always sk
 
 function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function fmtScore(s) { return s != null ? s.toFixed(2) : '-'; }
-function keyBadge(label, ok) { return '<span class="badge '+(ok?'badge-high':'badge-partial')+'" style="font-size:11px">'+(ok?'✅ ':'⚠️ ')+label+'</span>'; }
+function keyBadge(label, ok) {
+  var cls = ok === true ? 'badge-high' : ok === 'disabled' ? 'badge-year' : 'badge-partial';
+  var icon = ok === true ? '✅ ' : ok === 'disabled' ? '⚫ ' : '⚠️ ';
+  return '<span class=\"badge '+cls+'\" style=\"font-size:11px\">'+icon+label+'</span>';
+}
 
 // Load API key status on page load
-fetch('/api/status').then(r=>r.json()).then(d=>{
+refreshKeyStatus();
+
+async function refreshKeyStatus() {
+  const r = await fetch('/api/status');
+  const d = await r.json();
   const div = document.getElementById('key-status');
   const k = d.keys;
   div.innerHTML = keyBadge('LLM',k.llm) + keyBadge('S2',k.semantic_scholar) + keyBadge('OA mailto',k.openalex_mailto) + keyBadge('Embedding',k.embedding) + keyBadge('Reranker',k.reranker);
-});
+}
 
 // Build stage indicator HTML
 
@@ -289,6 +567,15 @@ async function doSearch() {
   const btn = document.getElementById('btn');
   const resultDiv = document.getElementById('result');
   const progressDiv = document.getElementById('progress');
+
+  // Pre-flight: check config readiness
+  const vRes = await fetch('/api/config/validate');
+  const vData = await vRes.json();
+  if (!vData.ready) {
+    resultDiv.innerHTML = '<p class=\"error\">配置未完成，缺少必需字段：' + vData.missing.join(', ') + '<br>请点击右上角 ⚙ 完成配置后再检索。</p>';
+    return;
+  }
+
   btn.disabled = true; btn.textContent = '检索中...';
   resultDiv.innerHTML = '';
 
@@ -360,6 +647,7 @@ async function doSearch() {
         if (reason) { html += '<span class="hover-tip"><span class="badge badge-year">理由▾</span><span class="tip-popup"><span class="tip-label">匹配理由</span><br>' + esc(reason) + '</span></span>'; }
         if (contrib) { html += '<span class="hover-tip"><span class="badge badge-year">贡献▾</span><span class="tip-popup"><span class="tip-label">核心贡献</span><br>' + esc(contrib) + '</span></span>'; }
         if (abstract) { html += '<span class="hover-tip"><span class="badge badge-year">摘要▾</span><span class="tip-popup"><span class="tip-label">摘要</span><br>' + esc(abstract) + '</span></span>'; }
+        if (p.url) { html += '<span class="hover-tip"><a href="' + esc(p.url) + '" target="_blank" rel="noopener" class="badge" style="background:#e3f2fd;color:#1565c0;text-decoration:none">原文🔗</a><span class="tip-popup"><span class="tip-label">原文链接</span><br>' + esc(p.url) + '</span></span>'; }
         html += '</div></div>';
       });
       if (papers.length > 50) html += '<p style="color:#888;font-size:13px">仅展示前 50 篇，共 ' + papers.length + ' 篇</p>';
@@ -385,7 +673,272 @@ async function doSearch() {
 }
 
 document.getElementById('query').addEventListener('keydown', function(e) { if (e.key === 'Enter') doSearch(); });
+
+// ===================== Config Panel =====================
+
+let configData = {};
+let configDirty = false;
+
+async function loadConfig() {
+  const r = await fetch('/api/config');
+  configData = await r.json();
+  updateThinkingOptions();
+  _renderHelpIcons();
+}
+
+function _formElements() {
+  return document.querySelectorAll('#config-form input, #config-form select');
+}
+
+function _snapshotForm() {
+  // Record current form values for dirty checking
+  for (const el of _formElements()) {
+    if (!el.id || !el.id.startsWith('cfg-')) continue;
+    el.dataset.savedValue = el.type === 'checkbox' ? String(el.checked) : el.value;
+  }
+  configDirty = false;
+}
+
+function _isDirty() {
+  for (const el of _formElements()) {
+    if (!el.id || !el.id.startsWith('cfg-')) continue;
+    const saved = el.dataset.savedValue || '';
+    const cur = el.type === 'checkbox' ? String(el.checked) : el.value;
+    if (cur !== saved) return true;
+  }
+  return false;
+}
+
+function _markDirty() { configDirty = true; }
+
+function openConfig() {
+  const ov = document.getElementById('config-overlay');
+  // Bind dirty listener on first open (form exists by now)
+  const form = document.getElementById('config-form');
+  if (form && !form.dataset.listenerBound) {
+    form.addEventListener('change', _markDirty);
+    form.addEventListener('input', _markDirty);
+    form.dataset.listenerBound = '1';
+  }
+  // Populate form from configData — values are now objects {value, help, required, ...}
+  for (const [k, v] of Object.entries(configData)) {
+    if (k === '_validate') continue;
+    const el = document.getElementById('cfg-' + k);
+    if (!el) continue;
+    const realVal = (typeof v === 'object' && v !== null) ? (v.value || '') : (v || '');
+    if (el.type === 'checkbox') el.checked = (realVal === 'true' || realVal === true);
+    else el.value = realVal;
+  }
+  ov.classList.add('show');
+  updateThinkingOptions();
+  _renderHelpIcons();
+  _snapshotForm();
+}
+
+function closeConfig(force) {
+  if (force !== true && _isDirty()) {
+    if (!confirm('有未保存的修改，是否放弃？')) return;
+  }
+  document.getElementById('config-overlay').classList.remove('show');
+}
+
+function toggleConfig() {
+  const ov = document.getElementById('config-overlay');
+  if (ov.classList.contains('show')) { closeConfig(false); return; }
+  openConfig();
+}
+
+async function saveConfig() {
+  const body = {};
+  for (const el of _formElements()) {
+    if (!el.id || !el.id.startsWith('cfg-')) continue;
+    const key = el.id.slice(4);
+    const cv = configData[key];
+    const oldVal = (typeof cv === 'object' && cv !== null) ? (cv.value || '') : String(cv || '');
+    const newVal = el.type === 'checkbox' ? (el.checked ? 'true' : 'false') : el.value;
+    // Allow empty string as intentional delete (only send if changed from oldVal)
+    if (newVal !== String(oldVal)) body[key] = newVal;
+  }
+  if (Object.keys(body).length === 0) { closeConfig(true); return; }
+  await fetch('/api/config', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+  await loadConfig();
+  closeConfig(true);
+  refreshKeyStatus();
+  const toast = document.getElementById('config-toast');
+  toast.classList.add('show');
+  setTimeout(function() { toast.classList.remove('show'); }, 2000);
+}
+
+// ===================== End Config Panel =====================
+
+// Dynamic thinking dropdown: DashScope only has on/off, OpenAI has full reasoning levels
+const thinkingOptions = {
+  openai: [
+    {value: 'off', label: '默认 (不传参数)'},
+    {value: 'none', label: '关闭'},
+    {value: 'minimal', label: '最低'},
+    {value: 'low', label: '低'},
+    {value: 'medium', label: '中'},
+    {value: 'high', label: '高'},
+    {value: 'xhigh', label: '极高'},
+  ],
+  dashscope: [
+    {value: 'off', label: '默认 (不传参数)'},
+    {value: 'none', label: '关闭'},
+    {value: 'low', label: '开'},
+  ]
+};
+
+function updateThinkingOptions() {
+  const providerEl = document.getElementById('cfg-LLM_PROVIDER');
+  const thinkingSel = document.getElementById('cfg-LLM_THINKING');
+  if (!providerEl || !thinkingSel) return;
+  const provider = providerEl.value;
+  const opts = thinkingOptions[provider] || thinkingOptions.openai;
+  const cv = configData['LLM_THINKING'];
+  const curVal = (typeof cv === 'object' && cv !== null) ? (cv.value || 'none') : (cv || 'none');
+  thinkingSel.innerHTML = '';
+  opts.forEach(function(o) {
+    const el = document.createElement('option');
+    el.value = o.value;
+    el.textContent = o.label;
+    if (o.value === curVal) el.selected = true;
+    thinkingSel.appendChild(el);
+  });
+}
+
+// Render ❓ help icons next to each config field's label text
+function _renderHelpIcons() {
+  var embeddingEnabled = document.getElementById('cfg-EMBEDDING_ENABLED');
+  var embDisabled = embeddingEnabled && !embeddingEnabled.checked;
+  var allInputs = document.querySelectorAll('#config-form input[id], #config-form select[id]');
+  allInputs.forEach(function(input) {
+    if (!input.id || !input.id.startsWith('cfg-')) return;
+    var key = input.id.slice(4);
+    var cv = configData[key];
+    if (!cv || typeof cv !== 'object') return;
+    var label = input.closest('.row > div') ? input.closest('.row > div').querySelector('label') : null;
+    if (!label) return;
+    // Remove any existing icon for this field
+    var existing = label.querySelector('.help-icon');
+    if (existing) existing.remove();
+    // Create new icon with tooltip
+    var icon = document.createElement('span');
+    icon.className = 'help-icon';
+    icon.textContent = '?';
+    var tip = document.createElement('span');
+    tip.className = 'help-tip';
+    tip.textContent = cv.help || '';
+    icon.appendChild(tip);
+    var val = cv.value || '';
+    var isMissing = cv.required && !val;
+    if (cv.required && key.startsWith('EMBEDDING_') && embDisabled) {
+      isMissing = false;
+    }
+    if (isMissing) {
+      icon.classList.add('help-icon-missing');
+    } else if (cv.required) {
+      icon.classList.add('help-icon-ok');
+    }
+    label.appendChild(icon);
+  });
+}
+
+loadConfig();
 </script>
+
+<div id="config-overlay" class="modal-overlay" onclick="if(event.target===this)closeConfig(false)">
+<div class="modal">
+<h2>⚙ 配置</h2>
+<form id="config-form" onsubmit="event.preventDefault();saveConfig()">
+
+<h3>模型 & 供应商</h3>
+<div class="row">
+  <div><label>LLM Provider</label><select id="cfg-LLM_PROVIDER" onchange="updateThinkingOptions()"><option value="openai">OpenAI (兼容)</option><option value="dashscope">DashScope</option></select></div>
+  <div><label>思考程度</label><select id="cfg-LLM_THINKING"></select></div>
+</div>
+<div class="row">
+  <div><label>LLM Model</label><input id="cfg-LLM_MODEL" placeholder="gpt-4o-mini"></div>
+  <div><label>LLM Fast Model</label><input id="cfg-LLM_FAST_MODEL" placeholder="gpt-4o-mini"></div>
+</div>
+<div class="row">
+  <div><label>OpenAI Base URL</label><input id="cfg-OPENAI_BASE_URL" placeholder="https://api.openai.com/v1"></div>
+  <div><label>LLM API Key</label><input id="cfg-LLM_API_KEY" type="password" placeholder="sk-..."></div>
+</div>
+
+<h3>学术搜索 API</h3>
+<div class="row">
+  <div><label>S2 API Key (可选)</label><input id="cfg-SEMANTIC_SCHOLAR_API_KEY" placeholder="留空使用公共端点"></div>
+  <div><label>OpenAlex 礼貌邮箱 (可选)</label><input id="cfg-OPENALEX_MAILTO" placeholder="your-email@example.com"></div>
+</div>
+
+<h3>Embedding / Reranker</h3>
+<div class="row">
+  <div><label>Embedding Provider</label><select id="cfg-EMBEDDING_PROVIDER"><option value="">(无)</option><option value="dashscope">DashScope</option></select></div>
+  <div><label>Embedding Model</label><input id="cfg-EMBEDDING_MODEL" placeholder="text-embedding-v4"></div>
+</div>
+<div class="row">
+  <div><label>Embedding API Key</label><input id="cfg-EMBEDDING_API_KEY" type="password" placeholder="sk-..."></div>
+  <div><label>Reranker Provider</label><select id="cfg-RERANKER_PROVIDER"><option value="">(无)</option><option value="dashscope">DashScope</option></select></div>
+</div>
+<div class="row">
+  <div><label>Reranker Model</label><input id="cfg-RERANKER_MODEL" placeholder="qwen3-rerank"></div>
+  <div><label>Reranker API Key</label><input id="cfg-RERANKER_API_KEY" type="password" placeholder="sk-..."></div>
+</div>
+
+<h3>粗筛 (Coarse)</h3>
+<div class="row">
+  <div><label>跳过阈值 (≤N 篇时跳过粗筛)</label><input id="cfg-COARSE_POOL_SKIP_THRESHOLD" type="number" step="1"></div>
+  <div><label>Embedding 最低相似度</label><input id="cfg-COARSE_EMBEDDING_MIN_SIMILARITY" type="number" step="0.01" min="0" max="1"></div>
+</div>
+<div class="row">
+  <div><label>BM25 权重</label><input id="cfg-COARSE_WEIGHT_BM25" type="number" step="0.01"></div>
+  <div><label>Embedding 权重</label><input id="cfg-COARSE_WEIGHT_EMBEDDING" type="number" step="0.01"></div>
+  <div><label>Structure 权重</label><input id="cfg-COARSE_WEIGHT_STRUCTURE" type="number" step="0.01"></div>
+</div>
+<div class="row">
+  <div><label>降级 BM25 权重</label><input id="cfg-COARSE_WEIGHT_BM25_FALLBACK" type="number" step="0.01"></div>
+  <div><label>降级 Structure 权重</label><input id="cfg-COARSE_WEIGHT_STRUCTURE_FALLBACK" type="number" step="0.01"></div>
+</div>
+<div class="row">
+  <div><label>截断相对阈值因子</label><input id="cfg-COARSE_RELATIVE_THRESHOLD_FACTOR" type="number" step="0.01"></div>
+</div>
+
+<h3>重排序 (Reranker)</h3>
+<div class="row">
+  <div><label>Top-K 保底</label><input id="cfg-RERANKER_TOP_K_FALLBACK" type="number" step="1"></div>
+  <div><label>相对阈值因子</label><input id="cfg-RERANKER_RELATIVE_THRESHOLD_FACTOR" type="number" step="0.01"></div>
+</div>
+
+<h3>Embedding</h3>
+<div class="row">
+  <div><label>启用 Embedding</label><input id="cfg-EMBEDDING_ENABLED" type="checkbox" style="width:auto;margin-top:6px" onchange="_renderHelpIcons()"></div>
+  <div><label>并发数</label><input id="cfg-EMBEDDING_CONCURRENCY" type="number" step="1"></div>
+  <div><label>RPS 限速</label><input id="cfg-EMBEDDING_RPS_LIMIT" type="number" step="1"></div>
+</div>
+
+<h3>精筛 (Judge)</h3>
+<div class="row">
+  <div><label>并发数</label><input id="cfg-JUDGE_CONCURRENCY" type="number" step="1"></div>
+  <div><label>单波上限</label><input id="cfg-JUDGE_WAVE_CAP" type="number" step="1"></div>
+</div>
+
+<p style="font-size:11px;color:#888;margin-top:8px">配置保存到 .env，下次启动生效。密码字段不显示当前值。</p>
+
+<div class="actions">
+  <button type="button" class="btn-secondary" onclick="closeConfig(false)">取消</button>
+  <button type="submit">保存</button>
+</div>
+</form>
+</div>
+</div>
+
+<div id="config-toast" class="toast" style="display:none">✅ 配置已保存到 .env</div>
+
 </body>
 </html>"""
 

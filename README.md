@@ -121,19 +121,22 @@
 - 去重：优先比对 DOI、ArXiv ID、Semantic Scholar paperId、OpenAlex ID；缺失统一 ID 时再按标题去除标点、空格并转小写后进行归一化字符串匹配。
 - 缓存：对论文元数据、引文结果、embedding 结果做缓存，避免同一篇论文在多轮滚动中被重复请求。
 
-6. 模块四：粗筛，直接根据 API 关联度得分、刊物信号、BM25 关键词匹配算法、嵌入模型得出余弦相似度
+6. 模块四：粗筛 — BM25 + Embedding + Structure 三路混合打分
 
-- 当 paper pool 中论文数量 <= 80，直接跳过，交给下一个模块（优先保留召回）；该数量阈值需通过公开测试集评估后确认。
-- 混合打分：
-  - 路 A (稀疏检索)：BM25 计算关键词匹配得分。
-  - 路 B (稠密检索)：候选轻量级 Embedding 模型（如 `BAAI/bge-small-zh-v1.5` 或同级英文/多语模型）计算余弦相似度，最终选择需根据实际语种分布与公开测试集效果确认。
-  - 路 C (结构信号)：API 原始相关度、venue 模糊命中、引文图邻接强度、是否由高相关种子扩展而来。  
-    加权融合与截断：将多路分数归一化后加权求和，BM25、Embedding、Structure 权重作为待评估参数；按总分降序排列，但不再固定严格截取 Top 50，而是采用 `Top-K + 相对阈值` 的候选策略，尽量避免过早截断召回。粗筛完成后必须记录召回损失、候选规模变化和耗时变化。
+- 当 paper pool 中论文数量 ≤ COARSE_POOL_SKIP_THRESHOLD（默认 40），直接跳过，交给下一个模块（优先保留召回）。
+- 三路 min-max 归一化 + 加权融合：
+  - 路 A (稀疏检索)：rank-bm25 关键词匹配。权重：COARSE_WEIGHT_BM25=0.35
+  - 路 B (稠密检索)：DashScope text-embedding-v4 余弦相似度。权重：COARSE_WEIGHT_EMBEDDING=0.35。硬底线：cosine_sim < COARSE_EMBEDDING_MIN_SIMILARITY=0.35 → 直接排除。并发 10 + Token Bucket 15 RPS 限流。可通过 EMBEDDING_ENABLED=false 关闭
+  - 路 C (结构信号)：年份接近度 + log1p(引用数) + venue 模糊命中。权重：COARSE_WEIGHT_STRUCTURE=0.30
+- 截断：combined < mean × COARSE_RELATIVE_THRESHOLD_FACTOR=0.3 → excluded
+- 无 Embedding 时退化为 0.60×BM25 + 0.40×Structure（权重可配置）
+- 所有阈值/权重均为可配置环境变量，Web 配置面板可直接修改
 
-7.  模块五：中筛，使用重排序模型 Reranker 进行高精度排序得分。候选模型包括高精度本地模型 `BAAI/bge-reranker-v2-gemma` 与均衡模型 `BAAI/bge-reranker-v2-m3`，最终选择、是否分阶段精排以及候选池大小阈值需通过公开测试集与本地资源评估后确认。  
-    不使用固定 `0.7` 这类硬编码阈值，而采用“相对阈值 + Top-K 保底”策略；Top-K 与 α 等参数需根据不同查询分布实验校准。
+7.  模块五：中筛 — DashScope qwen3-rerank API 远程重排序  
+    保底 Top-RERANKER_TOP_K_FALLBACK=30 篇 + 相对阈值 mean × RERANKER_RELATIVE_THRESHOLD_FACTOR=0.7。不设硬编码阈值，参数可配置。无 RERANKER_PROVIDER 配置时 pass-through 全量透传。
 
-8.  模块六：精筛，使用 LLM 精确筛选。执行方式候选为“每批 5~10 篇论文一次调用”的批处理模式，用于降低 token 与请求成本；批大小、并发量和模型版本需通过公开测试集与效率评估锁定。候选模型可包含 `qwen3.7 max`、`deepseek v4`、`glm5.1`、`minimax2.7` 等，提交前再按实际部署环境锁定具体模型版本、计费方式与吞吐性能。  
+8.  模块六：精筛 — LLM 100 并发单篇相关性判定  
+    每篇论文独立调用 LLM_FAST_MODEL，ThreadPoolExecutor 100 并发 + 5000 篇/波上限。输出三分类（高度相关/部分相关/不相关）+ 判定理由 + 核心贡献。无 LLM_API_KEY 时报错不静默回退。纳入口径（只收高度相关 vs 同时吸纳部分相关）以 F1 为目标实验调优。  
     LLM 精筛阶段除判断主题相关性外，还负责最终复核年份边界、venue 证据和“是否属于正式结果集”的纳入决策；即使元数据中的 venue 字段缺失，只要标题/摘要/补充字段能够证明论文对应 CVPR 正式发表版本，仍可保留。  
     system prompt 参考：
 
@@ -259,7 +262,7 @@ uv run python -m paper_search --serve --host 127.0.0.1 --port 8000
 
 | 地址 | 说明 |
 |------|------|
-| `http://127.0.0.1:8000/search` | 搜索页面，输入自然语言查询 |
+| `http://127.0.0.1:8000/search` | 搜索页面，输入自然语言查询（实时进度条 + 耗时显示 + 悬浮详情） |
 | `http://127.0.0.1:8000/docs` | **Swagger UI** — 交互式 API 调试界面，可直接发送请求并查看响应 |
 | `http://127.0.0.1:8000/redoc` | **ReDoc** — API 文档阅读界面 |
 
@@ -268,35 +271,71 @@ API 端点：
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/search?q=...` | 检索论文 |
+| GET | `/api/search/stream?q=...` | **SSE 流式检索** — 实时推送进度（keys/progress/result）和模块耗时 |
 | POST | `/api/search` | 检索论文（JSON body: `{"query": "..."}`） |
+| GET | `/api/status` | 返回各 API Key 配置状态（llm/s2/embedding/reranker）及 config_ready 完整性检查 |
+| GET | `/api/config` | 获取所有可配置项及其当前值、帮助文本和必需标记 |
+| POST | `/api/config` | 更新配置（写入 .env），保存后即时生效 |
+| GET | `/api/config/validate` | 返回配置完整性检查结果（ready + missing 列表） |
 | GET | `/api/runs` | 列出历史运行 |
 | GET | `/api/runs/{run_id}` | 获取某次运行详情 |
+| GET | `/api/runs/{run_id}/experiment` | 获取实验记录 JSON |
 
 ## 输出产物
 
-每次运行会在 `outputs/<run_id>/` 下生成三个文件：
+每次运行会在 `outputs/<run_id>/` 下生成：
 
 | 文件 | 内容 |
 |------|------|
-| `result.md` | Markdown 论文列表，含查询摘要、高度相关论文、部分相关论文、引文关系说明和运行摘要 |
+| `result.md` | Markdown 论文列表，含查询摘要、高度相关论文、部分相关论文、引文关系说明和运行摘要；每篇论文显示相关度（含 reranker_score）、匹配理由、核心贡献、摘要 |
 | `graph.json` | 结构化数据，含 `query`、`nodes`（论文节点列表）、`edges`（引文关系边列表） |
-| `experiment.json` | 实验记录，含 `run_id`、配置快照、阶段指标（query_understanding / initial_retrieval / result_format / overall）、输出文件路径 |
+| `experiment.json` | 实验记录，含 `run_id`、配置快照、阶段指标（query_understanding / initial_retrieval / snowball / coarse / rerank / judge / result_format / overall）、各模块耗时（stage_timings, ms）、预算使用、输出文件路径 |
+| `query_plan.json` | 完整 QueryPlan JSON 持久化，含 query_type、hard_filters、ranking_signals、semantic_queries、sub_queries_for_retrieval、api_payload_translation |
+| `logs/pipeline.jsonl` | 结构化 JSON 日志，每行一条记录，含 timestamp、level、logger、message、run_id、stage 等字段 |
 
 ## 运行测试
 
 ```bash
+# unittest（79 个测试）
 uv run python -m unittest discover -s tests -v
+
+# pytest
+uv run python -m pytest tests/ -v
 ```
 
 ## 环境变量说明
 
 | 变量 | 必需 | 说明 |
 |------|------|------|
-| `SEMANTIC_SCHOLAR_API_KEY` | 否 | Semantic Scholar API 认证，有 key 可提升速率限制；留空则使用公共端点（速率较低） |
-| `OPENALEX_MAILTO` | 否 | OpenAlex 礼貌池参数，填入邮箱可获得更稳定和更快的响应 |
-| `LLM_API_KEY` | 否（精筛阶段启用时必需） | LLM API 认证密钥 |
-| `LLM_API_BASE` | 否 | LLM API 端点，默认 `https://api.openai.com/v1` |
+| `LLM_PROVIDER` | 否 | LLM 提供商：`openai`（OpenAI 兼容）或 `dashscope`；默认 `openai` |
 | `LLM_MODEL` | 否 | LLM 模型名称，默认 `gpt-4o-mini` |
+| `LLM_FAST_MODEL` | 否 | 轻量/快速 LLM 模型名称，用于查询理解和精筛判定，默认回退到 `LLM_MODEL` |
+| `LLM_API_KEY` | 是（live 模式） | LLM API 认证密钥，查询理解和精筛模块均依赖；live 模式下未配置时报错 |
+| `OPENAI_BASE_URL` | 否 | OpenAI 兼容 API 端点，默认 `https://api.openai.com/v1` |
+| `LLM_THINKING` | 否 | 思考/推理深度：`none`(关闭,默认)/`off`(不传参)/`minimal`/`low`/`medium`/`high`/`xhigh` |
+| `SEMANTIC_SCHOLAR_API_KEY` | 否 | Semantic Scholar API 认证，有 key 可提升速率限制 |
+| `OPENALEX_MAILTO` | 否 | OpenAlex 礼貌池参数，填入邮箱可获得更稳定服务 |
+| `EMBEDDING_PROVIDER` | 否 | Embedding 服务提供商，如 `dashscope` |
+| `EMBEDDING_MODEL` | 否 | Embedding 模型，如 `text-embedding-v4` |
+| `EMBEDDING_API_KEY` | 否 | Embedding API 认证密钥 |
+| `EMBEDDING_ENABLED` | 否 | 是否启用 Embedding，`true`/`false`；默认 `true` |
+| `EMBEDDING_CONCURRENCY` | 否 | Embedding 并发 worker 数；默认 `10` |
+| `EMBEDDING_RPS_LIMIT` | 否 | Embedding API 每秒最大请求数；默认 `15` |
+| `RERANKER_PROVIDER` | 否 | Reranker 服务提供商，如 `dashscope` |
+| `RERANKER_MODEL` | 否 | Reranker 模型，如 `qwen3-rerank` |
+| `RERANKER_API_KEY` | 否 | Reranker API 认证密钥 |
+| `COARSE_POOL_SKIP_THRESHOLD` | 否 | 候选池 ≤N 跳过粗筛；默认 `40` |
+| `COARSE_EMBEDDING_MIN_SIMILARITY` | 否 | Embedding 硬底线；默认 `0.35` |
+| `COARSE_WEIGHT_BM25` | 否 | BM25 三路权重；默认 `0.35` |
+| `COARSE_WEIGHT_EMBEDDING` | 否 | Embedding 三路权重；默认 `0.35` |
+| `COARSE_WEIGHT_STRUCTURE` | 否 | Structure 三路权重；默认 `0.30` |
+| `COARSE_WEIGHT_BM25_FALLBACK` | 否 | 降级 BM25 权重；默认 `0.60` |
+| `COARSE_WEIGHT_STRUCTURE_FALLBACK` | 否 | 降级 Structure 权重；默认 `0.40` |
+| `COARSE_RELATIVE_THRESHOLD_FACTOR` | 否 | 截断因子；默认 `0.3` |
+| `RERANKER_TOP_K_FALLBACK` | 否 | 重排序 Top-K 保底；默认 `30` |
+| `RERANKER_RELATIVE_THRESHOLD_FACTOR` | 否 | 重排序阈值因子；默认 `0.7` |
+| `JUDGE_CONCURRENCY` | 否 | 精筛并发数；默认 `100` |
+| `JUDGE_WAVE_CAP` | 否 | 精筛单波上限；默认 `5000` |
 | `CACHE_DIR` | 否 | 缓存根目录，默认 `.cache` |
 | `OUTPUT_DIR` | 否 | 结果输出根目录，默认 `outputs` |
 | `LOG_LEVEL` | 否 | 日志级别，默认 `INFO` |
@@ -313,57 +352,29 @@ uv run python -m unittest discover -s tests -v
   - 完成标准：形成可指导后续代码实现的基础设施约定；明确 Paper 元数据字段、候选池状态、缓存键、日志字段、实验记录格式和输出目录；不在文档阶段创建代码脚手架或锁定最终部署方案
   - 影响范围：后续所有模块的运行配置、输入输出契约、可复现实验和安全边界
 
-- [ ] S-001：参考系统研究与策略对齐
+- [x] S-001：参考系统研究与策略对齐
   - 目标：在业务模块实现前短周期研究 PaSa-7B、SPAR、Ai2 Paper Finder、PaperQA2 等参考系统，提取可借鉴的查询分解、检索扩展、引文追踪、Agent 协作和评估策略
   - 完成标准：形成可落地的策略取舍，并将有效做法映射到查询理解、检索扩展、筛选判定、结果展示和评估基线中
   - 影响范围：系统方案创新性、落地可行性和算法泛化性，减少后续检索策略返工
 
-- [ ] S-002：贯穿式评测基线与输出契约建立
+- [x] S-002：贯穿式评测基线与输出契约建立
   - 目标：在查询理解和初检索实现前建立小型 golden set、统一输出 schema、评测指标口径和实验记录方式，让后续模型、阈值、Top-K、批大小和预算策略可比较
   - 完成标准：明确最小评测样例、期望论文集合标注口径、F1/耗时/API 调用数/Token 成本/缓存命中率记录字段，以及 Markdown + nodes/edges 输出 schema；公开测试集接入后沿用同一评估框架扩展
   - 影响范围：S-003 之后所有模块的参数校准、回归测试和提交前复现实验
 
-- [ ] S-003：查询理解与分解模块实现
+- [x] S-003：查询理解与分解模块实现（live 模式用 Pydantic `with_structured_output` + LLM，mock 用规则）
   - 目标：实现自然语言学术查询到结构化检索参数的自动转化，含查询类型识别（navigational/semantic/metadata）、子查询分解与查询改写扩展
-  - 完成标准：输入自然语言查询，输出包含 query_type、hard_filters、ranking_signals、semantic_queries、sub_queries_for_retrieval、api_payload_translation 的完整 JSON；query_type 决定后续检索策略路由；字段结构和可调参数需支持贯穿式评测与公开测试集校准
+  - 完成标准：live 模式通过 LangChain `with_structured_output` + Pydantic `QueryPlanSchema` 调用 LLM_FAST_MODEL，类型/数量/结构约束由 Pydantic 承担，跨字段规则由精简 prompt 承担。输出包含 query_type、hard_filters、ranking_signals（preferred_venues 为 list[str]）、semantic_queries（core_concepts + methodologies）、sub_queries_for_retrieval、api_payload_translation、query_expansion_policy；无 LLM_API_KEY 直接报错
   - 影响范围：后续所有检索模块的输入依赖
 
-- [ ] S-004：初检索模块实现
-  - 目标：多源 API 并行检索，根据查询类型路由检索策略，实际使用 api_payload_translation 定制参数，形成种子文献候选池
-  - 完成标准：对 sub_queries_for_retrieval 逐条调用 Semantic Scholar 与 OpenAlex，navigational 查询走标题精确匹配路径，metadata 查询优先使用 api_payload_translation，合并去重后候选池 30~50 篇；单 query 返回数量、API 调用预算和并发策略作为待评估参数；完成后跑最小 golden set 召回检查
-  - 影响范围：滚雪球模块的输入
-
-- [ ] S-005：滚雪球模块实现
-  - 目标：基于引文图的选择性迭代扩展与自动收敛，集成查询演化（Query Evolution）
-  - 完成标准：对精筛后高度相关论文（采用 RCS 式评估，即 1-10 分相关性评分 + 摘要重写，8 分及以上触发引文追踪）做双向引文追踪（1层深度），从相关论文中提取新术语做查询演化；多轮滚动后候选池有效扩展，达到收敛条件时自动停止；收敛条件含重叠率>70%、连续2轮无新关键词、最大轮数或预算耗尽；记录引文关系边到 CitationEdge（引文关系边数据结构，含来源论文ID、目标论文ID、边类型、发现轮次等字段）
-  - 影响范围：粗筛模块的输入
-
-- [ ] S-006：粗筛模块实现
-  - 目标：BM25 + Embedding + 结构信号三路混合打分与截断
-  - 完成标准：候选池>80 时输出截断后候选集，<=80 时跳过；三路混合打分 coarse_total = w1*bm25 + w2*embedding + w3*structure；权重及阈值均为待评估参数；粗筛结果保留分数供后续阶段参考；完成后记录召回损失与耗时变化
-  - 影响范围：中筛模块的输入
-
-- [ ] S-007：中筛模块实现
-  - 目标：Reranker 高精度重排序，相对阈值 + Top-K 保底
-  - 完成标准：输出重排序后候选集与 reranker_score，取高于均值的论文保底取 Top-30；Reranker 模型、Top-K 和相对阈值通过贯穿式评测与公开测试集锁定
-  - 影响范围：精筛模块的输入
-
-- [ ] S-008：精筛模块实现
-  - 目标：LLM 批处理相关性判定，采用 RCS 式评估（1-10 分评分 + 摘要重写）
-  - 完成标准：按批输出 1-10 相关性评分 + 重写摘要 + 判定理由的 JSON；RCS≥8 分的论文触发滚雪球引文追踪反馈；批大小、模型版本、纳入口径和 Token 预算通过贯穿式评测、公开测试集与效率评估确定
-  - 影响范围：结果整理模块的输入
-
-- [ ] S-009：结果整理模块实现
-  - 目标：Markdown 论文列表 + 引文关系图结构化数据输出，满足赛事结构化展示要求
-  - 完成标准：输出格式规范的 Markdown 与 nodes/edges 结构化数据，包含列表与关系图双形式展示；输出结构需包含 nodes（论文ID、标题、年份、venue、相关度、来源API）和 edges（引文关系：来源论文 → 目标论文及边类型），与贯穿式评测输出 schema 保持一致
-  - 影响范围：最终用户可见输出，直接影响评测中"回复结果结构化"10% 权重得分
-
+- [x] S-004：初检索模块实现（S2+OA 双源并行）
+- [x] S-003.5：公共服务底座打通（缓存/预算/状态机/日志）
+- [ ] S-005：滚雪球模块实现（LangGraph 骨架已搭建，节点为桩）
+- [ ] S-005.5：双模式运行（fast / exhaustive）
+- [x] S-006：粗筛模块实现（BM25 + DashScope Embedding + Structure 三路融合，≤40 跳过，Embedding 硬底线 0.35，三路权重 0.35/0.35/0.30）
+- [x] S-007：中筛模块实现（qwen3-rerank API 远程重排，相对阈值 mean×0.7 + Top-30 保底）
+- [x] S-008：精筛模块实现（LLM 100 并发单篇判定，三分类：高度相关/部分相关/不相关 + 理由 + 贡献）
+- [x] S-009：结果整理模块实现（result.md + graph.json + experiment.json + query_plan.json + logs/）
 - [ ] S-010：公开测试集回归、效率调优与提交前锁定
-  - 目标：基于公开测试集和前期 golden set 评估 F1、端到端耗时、API 调用数、Token 成本和缓存命中情况，校准召回、筛选和输出参数
-  - 完成标准：形成可复现实验结果，锁定提交前的模型、阈值、Top-K、批大小、预算策略和结果输出口径
-  - 影响范围：最终竞赛得分中的 F1 Score、运行效率和结构化输出质量
-
 - [ ] S-011：README 与项目文档同步维护
-  - 目标：当项目规划或说明文档发生实质变化时，执行同步检查
-  - 完成标准：README 仅表达当前方案草案和文档索引，不把待评估模型、阈值、权重或部署方案写成最终决策
-  - 影响范围：项目说明一致性和后续协作可维护性
+- [ ] S-011.5：CLI 子命令重构（run / eval / replay / inspect）

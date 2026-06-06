@@ -33,55 +33,27 @@ def build_query_plan(query: str, use_llm: bool = False) -> QueryPlan:
 
 
 def build_query_plan_llm(query: str) -> QueryPlan:
-    """Use LangChain + LLM to convert natural language query to structured QueryPlan."""
-    from langchain_core.messages import HumanMessage, SystemMessage
-    from langchain_core.output_parsers import JsonOutputParser
+    """Use LangChain + LLM with structured output to convert query to QueryPlan.
+
+    Uses ``ChatOpenAI.with_structured_output(QueryPlanSchema)`` so the LLM
+    is forced to return JSON conforming to the design-doc schema — no
+    free-form JSON parsing needed.
+    """
+    from langchain_core.messages import SystemMessage
 
     from .llm import get_fast_llm
     from .prompts import QUERY_UNDERSTANDING_PROMPT
+    from .schemas import QueryPlanSchema
 
     llm = get_fast_llm(temperature=0.0)
+    structured_llm = llm.with_structured_output(QueryPlanSchema, method="function_calling")
     prompt_text = QUERY_UNDERSTANDING_PROMPT.replace("{query}", query)
-    parser = JsonOutputParser()
 
-    messages = [
+    result: QueryPlanSchema = structured_llm.invoke([
         SystemMessage(content=prompt_text),
-        HumanMessage(content=f"Parse this query and return the JSON: {query}"),
-    ]
-    response = llm.invoke(messages)
-    llm_output = parser.parse(response.content)  # type: ignore[arg-type]
+    ])
 
-    return _llm_output_to_query_plan(query, llm_output)
-
-
-def _llm_output_to_query_plan(original_query: str, llm_output: dict[str, Any]) -> QueryPlan:
-    ia = llm_output.get("intent_analysis", {})
-    return QueryPlan(
-        original_query=original_query,
-        intent_analysis=IntentAnalysis(
-            domain=ia.get("domain", "Academic Search"),
-            query_type=ia.get("query_type", "semantic"),
-            boundary_note=ia.get("boundary_note", ""),
-        ),
-        hard_filters=llm_output.get("hard_filters", {}),
-        ranking_signals=llm_output.get("ranking_signals", {
-            "preferred_venues": [],
-            "venue_match_mode": "fuzzy_match_and_bonus",
-            "venue_as_hard_filter": False,
-        }),
-        semantic_queries=llm_output.get("semantic_queries", {"core_concepts": [], "methodologies": []}),
-        sub_queries_for_retrieval=llm_output.get("sub_queries_for_retrieval", [original_query]),
-        api_payload_translation=llm_output.get("api_payload_translation", {
-            "semantic_scholar": [],
-            "openalex": [],
-        }),
-        query_expansion_policy=llm_output.get("query_expansion_policy", {
-            "enabled": True,
-            "seed_paper_driven": True,
-            "extract_terms_from": ["title", "abstract", "keywords"],
-            "max_rounds": 2,
-        }),
-    )
+    return result.to_query_plan(original_query=query)
 
 
 def _build_query_plan_rules(query: str) -> QueryPlan:

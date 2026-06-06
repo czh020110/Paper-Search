@@ -1,15 +1,19 @@
 """Coarse screening: BM25 + Embedding + structure signal triple scoring and truncation.
 
-Per design 4.5: candidate pool > 80 triggers scoring; ≤ 80 skips.
+Per design 4.5: candidate pool > COARSE_POOL_SKIP_THRESHOLD triggers scoring; ≤ skips.
 路 A: BM25 sparse keyword matching
 路 B: DashScope text-embedding-v4 cosine similarity (deferred when unavailable)
 路 C: Structure signals (year proximity, venue match, citation count)
+
+All tuning parameters are configurable via environment variables so they can be
+adjusted without code changes.
 """
 
 from __future__ import annotations
 
 import logging
 import math
+import os
 import re
 
 from ..contracts import Paper, QueryPlan
@@ -17,7 +21,22 @@ from ..pool import CandidatePool
 
 logger = logging.getLogger(__name__)
 
-POOL_SKIP_THRESHOLD = 80
+# -- Tuning knobs (all configurable via env vars) --------------------------------
+
+POOL_SKIP_THRESHOLD = int(os.getenv("COARSE_POOL_SKIP_THRESHOLD", "40"))
+EMBEDDING_MIN_SIMILARITY = float(os.getenv("COARSE_EMBEDDING_MIN_SIMILARITY", "0.35"))
+
+# Triple-scoring weights (must sum roughly to 1.0)
+WEIGHT_BM25 = float(os.getenv("COARSE_WEIGHT_BM25", "0.35"))
+WEIGHT_EMBEDDING = float(os.getenv("COARSE_WEIGHT_EMBEDDING", "0.35"))
+WEIGHT_STRUCTURE = float(os.getenv("COARSE_WEIGHT_STRUCTURE", "0.30"))
+
+# Fallback weights when embedding is unavailable
+WEIGHT_BM25_FALLBACK = float(os.getenv("COARSE_WEIGHT_BM25_FALLBACK", "0.60"))
+WEIGHT_STRUCTURE_FALLBACK = float(os.getenv("COARSE_WEIGHT_STRUCTURE_FALLBACK", "0.40"))
+
+# Relative threshold multiplier applied to the mean combined score
+RELATIVE_THRESHOLD_FACTOR = float(os.getenv("COARSE_RELATIVE_THRESHOLD_FACTOR", "0.3"))
 
 
 def coarse_score(pool: CandidatePool, query_plan: QueryPlan) -> list[Paper]:
@@ -66,27 +85,35 @@ def coarse_score(pool: CandidatePool, query_plan: QueryPlan) -> list[Paper]:
         # Replace None with 0.0 so we can still compute weighted average
         emb_present = [s if s is not None else 0.0 for s in embedding_scores]
         emb_norm = _minmax_norm(emb_present)
-        combined = [0.35 * b + 0.35 * e + 0.3 * s for b, e, s in zip(bm25_norm, emb_norm, structure_norm)]
+        combined = [WEIGHT_BM25 * b + WEIGHT_EMBEDDING * e + WEIGHT_STRUCTURE * s for b, e, s in zip(bm25_norm, emb_norm, structure_norm)]
         logger.info("Coarse triple scoring (BM25 + Embedding + Structure) on %d papers", len(papers))
     else:
-        combined = [0.6 * b + 0.4 * s for b, s in zip(bm25_norm, structure_norm)]
+        combined = [WEIGHT_BM25_FALLBACK * b + WEIGHT_STRUCTURE_FALLBACK * s for b, s in zip(bm25_norm, structure_norm)]
         logger.info("Coarse double scoring (BM25 + Structure, no embedding available) on %d papers", len(papers))
 
     # Relative threshold: keep papers above mean * 0.3
     mean_score = sum(combined) / max(len(combined), 1)
-    threshold = mean_score * 0.3
+    threshold = mean_score * RELATIVE_THRESHOLD_FACTOR
 
     kept = 0
-    for paper, score in zip(papers, combined):
-        if score >= threshold:
+    emb_excluded = 0
+    for i, (paper, score) in enumerate(zip(papers, combined)):
+        # Embedding hard floor: papers with cosine similarity below the minimum
+        # are semantically irrelevant — exclude regardless of other signals.
+        emb_score = embedding_scores[i] if i < len(embedding_scores) else None
+        if emb_score is not None and emb_score < EMBEDDING_MIN_SIMILARITY:
+            pool.transition(paper.id, "excluded", reason=f"emb_sim={emb_score:.3f}_below_min")
+            emb_excluded += 1
+        elif score >= threshold:
             pool.transition(paper.id, "rough_scored", reason=f"coarse_score={score:.3f}")
             kept += 1
         else:
             pool.transition(paper.id, "excluded", reason=f"coarse_score={score:.3f}_below_threshold")
 
+    total_excluded = len(papers) - kept
     logger.info(
-        "Coarse scoring done: %d kept, %d excluded (threshold=%.3f)",
-        kept, len(papers) - kept, threshold,
+        "Coarse scoring done: %d kept, %d excluded (emb=%d, combined=%d, threshold=%.3f)",
+        kept, total_excluded, emb_excluded, total_excluded - emb_excluded, threshold,
     )
     return pool.by_status("rough_scored")
 

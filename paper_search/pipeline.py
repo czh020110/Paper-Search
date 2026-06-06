@@ -153,6 +153,7 @@ def _compute_output_file_paths(run_dir: Path) -> dict[str, str]:
         "markdown": str(run_dir / "result.md"),
         "graph": str(run_dir / "graph.json"),
         "experiment": str(run_dir / "experiment.json"),
+        "query_plan": str(run_dir / "query_plan.json"),
         "log": str(run_dir / "logs"),
     }
 

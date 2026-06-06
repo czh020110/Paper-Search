@@ -11,16 +11,25 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-EMBEDDING_CONCURRENCY = 30
+# DashScope text-embedding-v4 free tier: 30 QPS, ~60 QPM burst.
+# We cap concurrent workers at 10 and enforce a max submission rate of
+# *EMBEDDING_RPS_LIMIT* calls/sec via a token-bucket rate limiter.
+EMBEDDING_CONCURRENCY = int(os.getenv("EMBEDDING_CONCURRENCY", "10"))
+EMBEDDING_RPS_LIMIT = int(os.getenv("EMBEDDING_RPS_LIMIT", "15"))
+EMBEDDING_ENABLED = os.getenv("EMBEDDING_ENABLED", "true").lower() not in ("0", "false", "no")
 
 
 def get_embedding(text: str) -> list[float] | None:
     """Return a single embedding vector for *text*."""
+    if not EMBEDDING_ENABLED:
+        return None
     provider = os.getenv("EMBEDDING_PROVIDER", "")
     if not provider:
         logger.debug("No EMBEDDING_PROVIDER configured")
@@ -43,6 +52,42 @@ def batch_embeddings(texts: list[str]) -> list[list[float] | None]:
         return _dashscope_concurrent_embed(texts)
     else:
         return [None] * len(texts)
+
+
+# ---------------------------------------------------------------------------
+# Rate limiter
+# ---------------------------------------------------------------------------
+
+
+class _RateLimiter:
+    """Token-bucket rate limiter for concurrent API calls.
+
+    Multiple threads can call :meth:`acquire` concurrently — each acquires
+    one token, blocking if necessary to stay within the configured rate.
+    """
+
+    def __init__(self, rate: float) -> None:
+        self._rate = rate
+        self._tokens = rate  # start full
+        self._last_refill = time.monotonic()
+        self._lock = threading.Lock()
+
+    def acquire(self) -> None:
+        """Block until one token is available, then consume it."""
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                elapsed = now - self._last_refill
+                self._tokens = min(self._rate, self._tokens + elapsed * self._rate)
+                self._last_refill = now
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    return
+                wait = (1.0 - self._tokens) / self._rate
+            time.sleep(wait)
+
+
+_embedding_limiter = _RateLimiter(EMBEDDING_RPS_LIMIT)
 
 
 # ---------------------------------------------------------------------------
@@ -77,10 +122,10 @@ def _dashscope_embed(text: str) -> list[float] | None:
 
 
 def _dashscope_concurrent_embed(texts: list[str]) -> list[list[float] | None]:
-    """Embed all texts concurrently (each as a single-text API call).
+    """Embed all texts concurrently, rate-limited to *EMBEDDING_RPS_LIMIT*.
 
-    Uses a ThreadPoolExecutor with *EMBEDDING_CONCURRENCY* workers to
-    maximise throughput while staying within API rate limits.
+    Each call to ``executor.submit`` is gated by a token-bucket rate
+    limiter so the submission rate never exceeds the API quota.
     """
     results: list[list[float] | None] = [None] * len(texts)
 
@@ -88,7 +133,10 @@ def _dashscope_concurrent_embed(texts: list[str]) -> list[list[float] | None]:
         return index, _dashscope_embed(text)
 
     with ThreadPoolExecutor(max_workers=EMBEDDING_CONCURRENCY) as executor:
-        futures = {executor.submit(_embed_one, i, t): i for i, t in enumerate(texts)}
+        futures: dict[Any, int] = {}
+        for i, t in enumerate(texts):
+            _embedding_limiter.acquire()
+            futures[executor.submit(_embed_one, i, t)] = i
         for future in as_completed(futures):
             try:
                 idx, emb = future.result()

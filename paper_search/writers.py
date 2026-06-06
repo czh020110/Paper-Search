@@ -19,15 +19,18 @@ def write_outputs(
     result_path = run_dir / "result.md"
     graph_path = run_dir / "graph.json"
     experiment_path = run_dir / "experiment.json"
+    query_plan_path = run_dir / "query_plan.json"
 
     result_path.write_text(_render_markdown(query_plan, papers), encoding="utf-8")
     graph_path.write_text(json.dumps(graph_output.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
     experiment_path.write_text(json.dumps(experiment_record.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+    query_plan_path.write_text(json.dumps(query_plan.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
 
     return {
         "markdown": str(result_path),
         "graph": str(graph_path),
         "experiment": str(experiment_path),
+        "query_plan": str(query_plan_path),
         "log": str(run_dir / "logs"),
     }
 

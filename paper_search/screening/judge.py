@@ -19,8 +19,8 @@ from ..pool import CandidatePool
 
 logger = logging.getLogger(__name__)
 
-JUDGE_CONCURRENCY = 100  # max simultaneous LLM calls per wave
-JUDGE_WAVE_CAP = 5000  # max papers per wave
+JUDGE_CONCURRENCY = int(os.getenv("JUDGE_CONCURRENCY", "100"))
+JUDGE_WAVE_CAP = int(os.getenv("JUDGE_WAVE_CAP", "5000"))
 
 
 def judge(pool: CandidatePool, query_plan: QueryPlan) -> list[Paper]:

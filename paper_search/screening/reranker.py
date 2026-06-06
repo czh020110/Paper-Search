@@ -19,7 +19,8 @@ from ..pool import CandidatePool
 
 logger = logging.getLogger(__name__)
 
-TOP_K_FALLBACK = 30
+TOP_K_FALLBACK = int(os.getenv("RERANKER_TOP_K_FALLBACK", "30"))
+RERANKER_RELATIVE_THRESHOLD_FACTOR = float(os.getenv("RERANKER_RELATIVE_THRESHOLD_FACTOR", "0.7"))
 
 
 def rerank(pool: CandidatePool, query_plan: QueryPlan) -> list[Paper]:
@@ -68,7 +69,7 @@ def rerank(pool: CandidatePool, query_plan: QueryPlan) -> list[Paper]:
         paper.reranker_score = score
 
     mean_score = sum(score_list) / max(len(score_list), 1)
-    threshold = max(mean_score * 0.7, 0.01)
+    threshold = max(mean_score * RERANKER_RELATIVE_THRESHOLD_FACTOR, 0.01)
 
     scored = sorted(zip(papers, score_list), key=lambda x: x[1], reverse=True)
     kept = 0
