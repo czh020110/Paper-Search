@@ -53,6 +53,34 @@ def search_papers_by_title(title: str, limit: int = 10, cache: CacheStore | None
     return [_paper_from_s2(item) for item in raw_papers]
 
 
+def get_paper_references(paper_id: str, cache: CacheStore | None = None, limit: int = 20) -> list[Paper]:
+    """Fetch papers referenced by a given S2 paper (its bibliography).
+
+    Calls ``GET /paper/{paper_id}/references`` and extracts the ``citedPaper``
+    from each entry, converted via ``_paper_from_s2``.
+    """
+    params: dict[str, Any] = {"fields": S2_FIELDS, "limit": limit}
+    headers = _build_headers()
+    url = f"{S2_BASE_URL}/paper/{paper_id}/references?{urlencode(params)}"
+    payload = _request_with_retry(url, headers, cache=cache)
+    raw = cast(list[dict[str, Any]], payload.get("data") or [])
+    return [_paper_from_s2(entry["citedPaper"]) for entry in raw if isinstance(entry.get("citedPaper"), dict)]
+
+
+def get_paper_citations(paper_id: str, cache: CacheStore | None = None, limit: int = 20) -> list[Paper]:
+    """Fetch papers that cite a given S2 paper.
+
+    Calls ``GET /paper/{paper_id}/citations`` and extracts the ``citingPaper``
+    from each entry, converted via ``_paper_from_s2``.
+    """
+    params: dict[str, Any] = {"fields": S2_FIELDS, "limit": limit}
+    headers = _build_headers()
+    url = f"{S2_BASE_URL}/paper/{paper_id}/citations?{urlencode(params)}"
+    payload = _request_with_retry(url, headers, cache=cache)
+    raw = cast(list[dict[str, Any]], payload.get("data") or [])
+    return [_paper_from_s2(entry["citingPaper"]) for entry in raw if isinstance(entry.get("citingPaper"), dict)]
+
+
 def _request_with_retry(url: str, headers: dict[str, str], cache: CacheStore | None = None) -> dict[str, Any]:
     if cache is not None:
         cached_body = cache.get("api_responses", url)

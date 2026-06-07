@@ -72,6 +72,73 @@ def search_works_by_title(title: str, per_page: int = 10, cache: CacheStore | No
     return papers
 
 
+def get_work_citations(openalex_id: str, cache: CacheStore | None = None, per_page: int = 20) -> list[Paper]:
+    """Fetch works that cite a given OpenAlex work.
+
+    Uses the ``cites`` filter: ``GET /works?filter=cites:{openalex_id}``
+    """
+    papers: list[Paper] = []
+    cursor = "*"
+    while cursor:
+        params: dict[str, Any] = {
+            "filter": f"cites:{openalex_id}",
+            "per_page": per_page,
+            "cursor": cursor,
+        }
+        mailto = os.getenv("OPENALEX_MAILTO")
+        if mailto:
+            params["mailto"] = mailto
+        url = f"{OA_BASE_URL}/works?{urlencode(params, doseq=True)}"
+        payload = _request_with_retry(url, cache=cache)
+        raw = cast(list[dict[str, Any]], payload.get("results") or [])
+        papers.extend(_paper_from_oa(item) for item in raw)
+        cursor = cast(str | None, payload.get("meta", {}).get("cursor"))
+        if not cursor or len(raw) == 0:
+            break
+    return papers
+
+
+def get_work_references(openalex_id: str, cache: CacheStore | None = None, per_page: int = 20) -> list[Paper]:
+    """Fetch works referenced by a given OpenAlex work (its bibliography).
+
+    OpenAlex works expose a ``referenced_works`` list. This function fetches the
+    referenced works in bulk via ``GET /works?filter=openalex:{id1}|{id2}|...``
+    """
+    # First, fetch the work itself to get its referenced_works list
+    params: dict[str, Any] = {}
+    mailto = os.getenv("OPENALEX_MAILTO")
+    if mailto:
+        params["mailto"] = mailto
+    work_url = f"{OA_BASE_URL}/works/{openalex_id}?{urlencode(params)}"
+    payload = _request_with_retry(work_url, cache=cache)
+    ref_ids = cast(list[str], payload.get("referenced_works") or [])
+    if not ref_ids:
+        return []
+
+    # Extract short IDs from full URLs like "https://openalex.org/W..."
+    short_ids: list[str] = []
+    for rid in ref_ids[:per_page]:
+        rid = rid.strip().rstrip("/")
+        short = rid.rsplit("/", 1)[-1]
+        if short:
+            short_ids.append(short)
+
+    if not short_ids:
+        return []
+
+    # Batch query with pipe-separated IDs
+    batch_params: dict[str, Any] = {
+        "filter": "openalex:" + "|openalex:".join(short_ids),
+        "per_page": per_page,
+    }
+    if mailto:
+        batch_params["mailto"] = mailto
+    batch_url = f"{OA_BASE_URL}/works?{urlencode(batch_params, doseq=True)}"
+    batch_payload = _request_with_retry(batch_url, cache=cache)
+    raw = cast(list[dict[str, Any]], batch_payload.get("results") or [])
+    return [_paper_from_oa(item) for item in raw]
+
+
 def _request_with_retry(url: str, cache: CacheStore | None = None) -> dict[str, Any]:
     if cache is not None:
         cached_body = cache.get("api_responses", url)
