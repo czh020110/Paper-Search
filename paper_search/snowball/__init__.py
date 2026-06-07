@@ -84,7 +84,10 @@ def _query_evolution(state: SnowballState) -> SnowballState:
     if not papers:
         papers = pool.by_status("rough_scored")
     if not papers:
-        logger.info("No scored papers in pool for query evolution")
+        # Fallback: use raw seed papers (coarse/rerank/judge haven't run yet)
+        papers = pool.by_status("seed")
+    if not papers:
+        logger.info("No papers in pool for query evolution")
         return state
 
     # Take top K and build context

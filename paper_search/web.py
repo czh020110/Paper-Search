@@ -527,7 +527,7 @@ Embedding 并发: <b>EMBEDDING_CONCURRENCY</b>=10 workers, RPS 限速: <b>EMBEDD
 <p class="api-link">API 文档：<a href="/docs">Swagger UI</a> · <a href="/redoc">ReDoc</a></p>
 
 <script>
-const STAGES = ['query_understanding','initial_retrieval','snowball','coarse','rerank','judge'];
+const STAGES = ['query_understanding','initial_retrieval','coarse','rerank','judge','snowball'];
 const STAGE_LABELS = {'query_understanding':'🔍 查询理解','initial_retrieval':'📡 多源检索','snowball':'❄️ 滚雪球','coarse':'🔢 粗筛','rerank':'🎯 重排序','judge':'⚖️ 精筛判定'};
 const STAGE_SKIPPED = new Set([]);  // snowball implemented (S-005), no longer skipped
 

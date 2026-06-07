@@ -74,17 +74,11 @@ def run_pipeline(
     for paper in deduped_papers:
         pool.add(paper, status="seed")
 
-    # Screening chain: snowball → coarse → rerank → judge → selected
-    # Snowball expansion (S-005): query evolution + selective citation expansion.
-    # Skip in mock mode — the snowball node functions are stubs and running
-    # LangGraph's StateGraph.invoke() with mock data is pure overhead that
-    # was causing a GC death spiral during test discovery.
-    if backend == "live":
-        t0 = time.time()
-        pool, snowball_edges = run_snowball(pool, query_plan, budget, cache=cache)
-        timings["snowball"] = (time.time() - t0) * 1000
-    else:
-        snowball_edges: list[dict[str, object]] = []
+    # Screening chain: coarse → rerank → judge → snowball → selected
+    # Snowball runs AFTER judge so it has relevance-scored papers to
+    # extract keywords from and expand citations from.
+    # Skip in mock mode — mock data doesn't have real paper IDs for
+    # API-based citation expansion and running the graph is pure overhead.
 
     # Coarse screening (S-006): BM25 + Embedding + Structure triple scoring
     t0 = time.time()
@@ -103,6 +97,17 @@ def run_pipeline(
     judge(pool, query_plan)
     timings["judge"] = (time.time() - t0) * 1000
     _notify(on_stage, "judge", "done")
+
+    # Snowball expansion (S-005): query evolution + selective citation expansion.
+    # Runs after judge so it has llm_judged papers to extract keywords from
+    # and expand citations from.
+    if backend == "live":
+        t0 = time.time()
+        pool, snowball_edges = run_snowball(pool, query_plan, budget, cache=cache)
+        timings["snowball"] = (time.time() - t0) * 1000
+    else:
+        snowball_edges: list[dict[str, object]] = []
+    _notify(on_stage, "snowball", "done")
 
     # Merge snowball edges with any existing raw edges
     all_edges = _merge_edges(raw_edges, snowball_edges)
