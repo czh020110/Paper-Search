@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "paper-search"
 version = "0.1.0"
 description = "Offline minimal loop for academic paper search"
-readme = "README-参考.md"
+readme = "README.md"
 requires-python = ">=3.10,<3.11"
 dependencies = [
     "dashscope>=1.25.21",

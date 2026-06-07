@@ -213,11 +213,26 @@ brew install uv
 
 # 在项目根目录初始化虚拟环境并安装依赖
 uv sync
-
-# 复制环境变量模板并填入实际密钥
-cp .env.example .env
-# 编辑 .env 填入 API Key（SEMANTIC_SCHOLAR_API_KEY 为可选，有 key 可提升速率限制；OPENALEX_MAILTO 为可选，填入邮箱可进入礼貌池获得更稳定的服务）
 ```
+
+### 环境配置（重要）
+
+项目使用双 `.env` 机制：
+
+| 文件 | 作用 | 是否提交到 Git |
+|------|------|---------------|
+| `.env` | **模板文件**，放占位符，给开发者参考 | ✅ 提交 |
+| `.env.local` | **本地配置**，放真实 API Key 和模型名 | ❌ 已 .gitignore |
+
+```bash
+# 首次使用：复制模板
+cp .env .env.local
+
+# 编辑 .env.local 填入真实 API Key
+# 程序启动时优先读取 .env.local，未找到时回退到 .env
+```
+
+> Web 面板 ⚙ → 点"保存"时自动写入 **.env.local**，不影响模板。`.env` 保留占位符安全提交。
 
 ## CLI 使用
 
@@ -275,7 +290,7 @@ API 端点：
 | POST | `/api/search` | 检索论文（JSON body: `{"query": "..."}`） |
 | GET | `/api/status` | 返回各 API Key 配置状态（llm/s2/embedding/reranker）及 config_ready 完整性检查 |
 | GET | `/api/config` | 获取所有可配置项及其当前值、帮助文本和必需标记 |
-| POST | `/api/config` | 更新配置（写入 .env），保存后即时生效 |
+| POST | `/api/config` | 更新配置（写入 `.env.local`），保存后即时生效 |
 | GET | `/api/config/validate` | 返回配置完整性检查结果（ready + missing 列表） |
 | GET | `/api/runs` | 列出历史运行 |
 | GET | `/api/runs/{run_id}` | 获取某次运行详情 |
@@ -339,6 +354,8 @@ uv run python -m pytest tests/ -v
 | `CACHE_DIR` | 否 | 缓存根目录，默认 `.cache` |
 | `OUTPUT_DIR` | 否 | 结果输出根目录，默认 `outputs` |
 | `LOG_LEVEL` | 否 | 日志级别，默认 `INFO` |
+
+> 配置写入 `.env.local`（不提交 Git）。`.env` 保留为占位符模板。Web 面板也可直接修改。
 
 ---
 

@@ -316,16 +316,27 @@ def _collect_config() -> dict[str, Any]:
 
 
 def _env_path() -> Path:
+    """Return .env.local path (local-only, not committed); fallback to .env."""
+    local = Path.cwd() / ".env.local"
+    if local.is_file():
+        return local
     return Path.cwd() / ".env"
 
 
 def _write_env(updates: dict[str, str]) -> None:
-    """Write config updates to the .env file, preserving existing keys.
+    """Write config updates to .env.local, creating from .env template if needed.
 
-    Keys that already exist in .env are updated in-place; new keys are
-    appended.  Comment lines and blank lines are preserved.
+    Keys that already exist are updated in-place; new keys are appended.
+    Comment lines and blank lines are preserved.
     """
-    env_file = _env_path()
+    local = Path.cwd() / ".env.local"
+    env = Path.cwd() / ".env"
+
+    # Auto-create .env.local from .env template if it doesn't exist
+    if not local.is_file() and env.is_file():
+        local.write_text(env.read_text(encoding="utf-8"), encoding="utf-8")
+
+    env_file = local if local.is_file() else env
     lines: list[str] = []
     seen: set[str] = set()
     if env_file.is_file():
@@ -440,6 +451,17 @@ _SEARCH_PAGE_HTML = """<!DOCTYPE html>
   .help-icon .help-tip::-webkit-scrollbar { width: 4px; }
   .help-icon .help-tip::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.25); border-radius: 2px; }
   .help-icon:hover .help-tip, .help-tip:hover { display: block; }
+  /* Test buttons */
+  .test-btn { font-size: 11px; padding: 3px 10px; border: none; border-radius: 4px; cursor: pointer; margin-left: 6px; vertical-align: middle; }
+  .test-btn-ok { background: #e8f5e9; color: #2e7d32; }
+  .test-btn-ok:hover { background: #c8e6c9; }
+  .test-btn-fail { background: #fdeaea; color: #d32f2f; }
+  .test-btn-fail:hover { background: #f5c6c6; }
+  .test-btn-idle { background: #e3f2fd; color: #1565c0; }
+  .test-btn-idle:hover { background: #bbdefb; }
+  .test-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  /* Embedding disabled state */
+  .emb-disabled { opacity: 0.4; pointer-events: none; }
 </style>
 </head>
 <body>
@@ -732,6 +754,7 @@ function openConfig() {
   ov.classList.add('show');
   updateThinkingOptions();
   _renderHelpIcons();
+  updateEmbDependent();
   _snapshotForm();
 }
 
@@ -773,7 +796,128 @@ async function saveConfig() {
   setTimeout(function() { toast.classList.remove('show'); }, 2000);
 }
 
-// ===================== End Config Panel =====================
+// ===================== Test Functions =====================
+
+function showTestToast(message, isOk) {
+  let toast = document.getElementById('test-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'test-toast';
+    toast.className = 'toast';
+    toast.style.cssText = 'display:none;position:fixed;bottom:60px;left:50%;transform:translateX(-50%);color:#fff;padding:10px 24px;border-radius:8px;font-size:14px;z-index:400;max-width:80vw;word-break:break-word';
+    document.body.appendChild(toast);
+  }
+  toast.style.background = isOk ? '#2e7d32' : '#d32f2f';
+  toast.textContent = (isOk ? '✅ ' : '❌ ') + message;
+  toast.classList.add('show');
+  toast.style.display = 'block';
+  setTimeout(function() { toast.style.display = 'none'; toast.classList.remove('show'); }, 4000);
+}
+
+function _getFormValue(key) {
+  const el = document.getElementById('cfg-' + key);
+  if (!el) return '';
+  return el.type === 'checkbox' ? (el.checked ? 'true' : 'false') : el.value;
+}
+
+async function _callTest(endpoint, btnId, body) {
+  const btn = document.getElementById(btnId);
+  if (btn) { btn.disabled = true; btn.textContent = '测试中...'; }
+  try {
+    const opts = { method: 'POST' };
+    if (body) { opts.headers = {'Content-Type': 'application/json'}; opts.body = JSON.stringify(body); }
+    const r = await fetch(endpoint, opts);
+    const d = await r.json();
+    showTestToast(d.message, d.ok);
+    if (btn) {
+      btn.className = 'test-btn ' + (d.ok ? 'test-btn-ok' : 'test-btn-fail');
+      btn.textContent = d.ok ? '✓ 正常' : '✗ 失败';
+      setTimeout(function() {
+        btn.className = 'test-btn test-btn-idle';
+        btn.textContent = '测试';
+        btn.disabled = false;
+      }, 4000);
+    }
+  } catch (e) {
+    showTestToast('请求失败: ' + e.message, false);
+    if (btn) { btn.disabled = false; btn.textContent = '测试'; }
+  }
+}
+
+function testLLM() {
+  _callTest('/api/test/llm', 'btn-test-llm', {
+    provider: _getFormValue('LLM_PROVIDER'),
+    api_key: _getFormValue('LLM_API_KEY'),
+    model: _getFormValue('LLM_MODEL'),
+    base_url: _getFormValue('OPENAI_BASE_URL'),
+  });
+}
+
+function testS2() {
+  _callTest('/api/test/semantic-scholar', 'btn-test-s2', {
+    api_key: _getFormValue('SEMANTIC_SCHOLAR_API_KEY'),
+  });
+}
+
+function testOA() {
+  _callTest('/api/test/openalex', 'btn-test-oa', {
+    mailto: _getFormValue('OPENALEX_MAILTO'),
+  });
+}
+
+function testEmbedding() {
+  const btn = document.getElementById('btn-test-emb');
+  if (btn) { btn.disabled = true; btn.textContent = '测试中...'; }
+  const embBody = {
+    api_key: _getFormValue('EMBEDDING_API_KEY'),
+    model: _getFormValue('EMBEDDING_MODEL'),
+  };
+  const rerankBody = {
+    api_key: _getFormValue('RERANKER_API_KEY'),
+    model: _getFormValue('RERANKER_MODEL'),
+  };
+  Promise.all([
+    fetch('/api/test/embedding', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(embBody) }).then(function(r) { return r.json(); }),
+    fetch('/api/test/reranker', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(rerankBody) }).then(function(r) { return r.json(); }),
+  ]).then(function(d) {
+    var d1 = d[0], d2 = d[1];
+    var msg = 'Embedding: ' + (d1.ok ? 'OK' : 'Fail') + ' | Reranker: ' + (d2.ok ? 'OK' : 'Fail');
+    var allOk = d1.ok && d2.ok;
+    showTestToast(msg, allOk);
+    if (btn) {
+      btn.className = 'test-btn ' + (allOk ? 'test-btn-ok' : 'test-btn-fail');
+      btn.textContent = allOk ? 'OK' : '部分失败';
+      setTimeout(function() { btn.className = 'test-btn test-btn-idle'; btn.textContent = '测试'; btn.disabled = false; }, 4000);
+    }
+  }).catch(function(e) {
+    showTestToast('请求失败: ' + e.message, false);
+    if (btn) { btn.disabled = false; btn.textContent = '测试'; }
+  });
+}
+
+// Embedding toggle: grey-out / enable dependent fields
+function updateEmbDependent() {
+  const cb = document.getElementById('cfg-EMBEDDING_ENABLED');
+  const enabled = cb && cb.checked;
+  const els = document.querySelectorAll('.emb-dependent');
+  els.forEach(function(el) {
+    if (enabled) {
+      el.classList.remove('emb-disabled');
+      el.querySelectorAll('input, select').forEach(function(inp) { inp.disabled = false; });
+    } else {
+      el.classList.add('emb-disabled');
+      el.querySelectorAll('input, select').forEach(function(inp) { inp.disabled = true; });
+    }
+  });
+  // Also update help icons
+  _renderHelpIcons();
+}
+
+function onEmbeddingToggle() {
+  updateEmbDependent();
+}
+
+// ===================== End Test Functions =====================
 
 // Dynamic thinking dropdown: DashScope only has on/off, OpenAI has full reasoning levels
 const thinkingOptions = {
@@ -869,35 +1013,42 @@ loadConfig();
   <div><label>OpenAI Base URL</label><input id="cfg-OPENAI_BASE_URL" placeholder="https://api.openai.com/v1"></div>
   <div><label>LLM API Key</label><input id="cfg-LLM_API_KEY" type="password" placeholder="sk-..."></div>
 </div>
+<div style="margin:-8px 0 12px;text-align:right"><button id="btn-test-llm" type="button" class="test-btn test-btn-idle" onclick="testLLM()">🔗 测试连接</button></div>
 
 <h3>学术搜索 API</h3>
 <div class="row">
-  <div><label>S2 API Key (可选)</label><input id="cfg-SEMANTIC_SCHOLAR_API_KEY" placeholder="留空使用公共端点"></div>
-  <div><label>OpenAlex 礼貌邮箱 (可选)</label><input id="cfg-OPENALEX_MAILTO" placeholder="your-email@example.com"></div>
+  <div><label>S2 API Key (可选)</label><input id="cfg-SEMANTIC_SCHOLAR_API_KEY" placeholder="留空使用公共端点"><button id="btn-test-s2" type="button" class="test-btn test-btn-idle" onclick="testS2()" style="margin-left:4px">测试 S2</button></div>
+  <div><label>OpenAlex 礼貌邮箱 (可选)</label><input id="cfg-OPENALEX_MAILTO" placeholder="your-email@example.com"><button id="btn-test-oa" type="button" class="test-btn test-btn-idle" onclick="testOA()" style="margin-left:4px">测试 OA</button></div>
 </div>
 
 <h3>Embedding / Reranker</h3>
 <div class="row">
-  <div><label>Embedding Provider</label><select id="cfg-EMBEDDING_PROVIDER"><option value="">(无)</option><option value="dashscope">DashScope</option></select></div>
-  <div><label>Embedding Model</label><input id="cfg-EMBEDDING_MODEL" placeholder="text-embedding-v4"></div>
+  <div class="emb-dependent"><label>Embedding Provider</label><select id="cfg-EMBEDDING_PROVIDER"><option value="">(无)</option><option value="dashscope">DashScope</option></select></div>
+  <div class="emb-dependent"><label>Embedding Model</label><input id="cfg-EMBEDDING_MODEL" placeholder="text-embedding-v4"></div>
 </div>
 <div class="row">
-  <div><label>Embedding API Key</label><input id="cfg-EMBEDDING_API_KEY" type="password" placeholder="sk-..."></div>
-  <div><label>Reranker Provider</label><select id="cfg-RERANKER_PROVIDER"><option value="">(无)</option><option value="dashscope">DashScope</option></select></div>
+  <div class="emb-dependent"><label>Embedding API Key</label><input id="cfg-EMBEDDING_API_KEY" type="password" placeholder="sk-..."></div>
+  <div class="emb-dependent"><label>Reranker Provider</label><select id="cfg-RERANKER_PROVIDER"><option value="">(无)</option><option value="dashscope">DashScope</option></select></div>
 </div>
 <div class="row">
-  <div><label>Reranker Model</label><input id="cfg-RERANKER_MODEL" placeholder="qwen3-rerank"></div>
-  <div><label>Reranker API Key</label><input id="cfg-RERANKER_API_KEY" type="password" placeholder="sk-..."></div>
+  <div class="emb-dependent"><label>Reranker Model</label><input id="cfg-RERANKER_MODEL" placeholder="qwen3-rerank"></div>
+  <div class="emb-dependent"><label>Reranker API Key</label><input id="cfg-RERANKER_API_KEY" type="password" placeholder="sk-..."></div>
 </div>
+<div class="row">
+  <div class="emb-dependent"><label>并发数</label><input id="cfg-EMBEDDING_CONCURRENCY" type="number" step="1"></div>
+  <div class="emb-dependent"><label>RPS 限速</label><input id="cfg-EMBEDDING_RPS_LIMIT" type="number" step="1"></div>
+  <div><label>启用 Embedding</label><input id="cfg-EMBEDDING_ENABLED" type="checkbox" style="width:auto;margin:6px 0 0" onchange="onEmbeddingToggle()"></div>
+</div>
+<div style="margin:-8px 0 12px;text-align:right"><button id="btn-test-emb" type="button" class="test-btn test-btn-idle" onclick="testEmbedding()">🔗 测试连接</button></div>
 
 <h3>粗筛 (Coarse)</h3>
 <div class="row">
   <div><label>跳过阈值 (≤N 篇时跳过粗筛)</label><input id="cfg-COARSE_POOL_SKIP_THRESHOLD" type="number" step="1"></div>
-  <div><label>Embedding 最低相似度</label><input id="cfg-COARSE_EMBEDDING_MIN_SIMILARITY" type="number" step="0.01" min="0" max="1"></div>
+  <div class="emb-dependent"><label>Embedding 最低相似度</label><input id="cfg-COARSE_EMBEDDING_MIN_SIMILARITY" type="number" step="0.01" min="0" max="1"></div>
 </div>
 <div class="row">
   <div><label>BM25 权重</label><input id="cfg-COARSE_WEIGHT_BM25" type="number" step="0.01"></div>
-  <div><label>Embedding 权重</label><input id="cfg-COARSE_WEIGHT_EMBEDDING" type="number" step="0.01"></div>
+  <div class="emb-dependent"><label>Embedding 权重</label><input id="cfg-COARSE_WEIGHT_EMBEDDING" type="number" step="0.01"></div>
   <div><label>Structure 权重</label><input id="cfg-COARSE_WEIGHT_STRUCTURE" type="number" step="0.01"></div>
 </div>
 <div class="row">
@@ -914,20 +1065,13 @@ loadConfig();
   <div><label>相对阈值因子</label><input id="cfg-RERANKER_RELATIVE_THRESHOLD_FACTOR" type="number" step="0.01"></div>
 </div>
 
-<h3>Embedding</h3>
-<div class="row">
-  <div><label>启用 Embedding</label><input id="cfg-EMBEDDING_ENABLED" type="checkbox" style="width:auto;margin-top:6px" onchange="_renderHelpIcons()"></div>
-  <div><label>并发数</label><input id="cfg-EMBEDDING_CONCURRENCY" type="number" step="1"></div>
-  <div><label>RPS 限速</label><input id="cfg-EMBEDDING_RPS_LIMIT" type="number" step="1"></div>
-</div>
-
 <h3>精筛 (Judge)</h3>
 <div class="row">
   <div><label>并发数</label><input id="cfg-JUDGE_CONCURRENCY" type="number" step="1"></div>
   <div><label>单波上限</label><input id="cfg-JUDGE_WAVE_CAP" type="number" step="1"></div>
 </div>
 
-<p style="font-size:11px;color:#888;margin-top:8px">配置保存到 .env，下次启动生效。密码字段不显示当前值。</p>
+<p style="font-size:11px;color:#888;margin-top:8px">配置保存到 .env.local（本地私密，不提交 Git）。密码字段不显示当前值。</p>
 
 <div class="actions">
   <button type="button" class="btn-secondary" onclick="closeConfig(false)">取消</button>
@@ -937,7 +1081,7 @@ loadConfig();
 </div>
 </div>
 
-<div id="config-toast" class="toast" style="display:none">✅ 配置已保存到 .env</div>
+<div id="config-toast" class="toast" style="display:none">✅ 配置已保存到 .env.local</div>
 
 </body>
 </html>"""
@@ -958,6 +1102,125 @@ def _run_pipeline(query: str, on_stage: Any = None) -> dict[str, Any]:
     except Exception as e:
         logger.exception("Pipeline failed")
         return {"error": str(e)}
+
+
+# ============================ Test Endpoints ============================ #
+
+
+@app.post("/api/test/llm", tags=["测试"], summary="测试 LLM 连通性")
+async def test_llm(body: dict[str, Any] = Body({})) -> dict[str, Any]:
+    """Test LLM connectivity using provided (or env) config."""
+    try:
+        from langchain_openai import ChatOpenAI
+        from langchain_core.messages import HumanMessage
+
+        provider = body.get("provider") or os.getenv("LLM_PROVIDER", "openai")
+        api_key = body.get("api_key") or os.getenv("LLM_API_KEY", "")
+        model = body.get("model") or os.getenv("LLM_MODEL") or os.getenv("LLM_FAST_MODEL") or "gpt-4o-mini"
+        base_url = body.get("base_url") or os.getenv("OPENAI_BASE_URL") or (
+            "https://dashscope.aliyuncs.com/compatible-mode/v1" if provider == "dashscope"
+            else "https://api.openai.com/v1"
+        )
+
+        llm = ChatOpenAI(model=model, temperature=0.0, api_key=api_key, base_url=base_url)
+        resp = llm.invoke([HumanMessage(content="Respond with only: OK")])
+        msg = resp.content.strip()[:100] if hasattr(resp, "content") else str(resp)[:100]
+        return {"ok": True, "message": f"LLM 响应正常: {msg}"}
+    except Exception as e:
+        return {"ok": False, "message": f"LLM 测试失败: {str(e)[:200]}"}
+
+
+@app.post("/api/test/embedding", tags=["测试"], summary="测试 Embedding API")
+async def test_embedding(body: dict[str, Any] = Body({})) -> dict[str, Any]:
+    """Test embedding API using provided (or env) config."""
+    try:
+        import dashscope
+        from http import HTTPStatus
+
+        api_key = body.get("api_key") or os.getenv("EMBEDDING_API_KEY", "")
+        model = body.get("model") or os.getenv("EMBEDDING_MODEL", "text-embedding-v4")
+        if not api_key:
+            return {"ok": False, "message": "未配置 Embedding API Key"}
+
+        resp = dashscope.TextEmbedding.call(model=model, input="test query", api_key=api_key)
+        if resp.status_code == HTTPStatus.OK:
+            dim = len(resp.output["embeddings"][0]["embedding"])
+            return {"ok": True, "message": f"Embedding 正常，向量维度: {dim}"}
+        return {"ok": False, "message": f"Embedding 返回错误: {resp.status_code}"}
+    except Exception as e:
+        return {"ok": False, "message": f"Embedding 测试失败: {str(e)[:200]}"}
+
+
+@app.post("/api/test/reranker", tags=["测试"], summary="测试 Reranker API")
+async def test_reranker(body: dict[str, Any] = Body({})) -> dict[str, Any]:
+    """Test reranker API using provided (or env) config."""
+    try:
+        import dashscope
+        from http import HTTPStatus
+
+        api_key = body.get("api_key") or os.getenv("RERANKER_API_KEY", "")
+        model = body.get("model") or os.getenv("RERANKER_MODEL", "qwen3-rerank")
+        if not api_key:
+            return {"ok": False, "message": "未配置 Reranker API Key"}
+
+        resp = dashscope.TextReRank.call(
+            model=model, query="test", documents=["test document"],
+            top_n=1, return_documents=False, api_key=api_key,
+        )
+        if resp.status_code == HTTPStatus.OK:
+            return {"ok": True, "message": "Reranker API 正常"}
+        return {"ok": False, "message": f"Reranker 返回错误: {resp.status_code} - {resp.message}"}
+    except Exception as e:
+        return {"ok": False, "message": f"Reranker 测试失败: {str(e)[:200]}"}
+
+
+@app.post("/api/test/semantic-scholar", tags=["测试"], summary="测试 Semantic Scholar API")
+async def test_semantic_scholar(body: dict[str, Any] = Body({})) -> dict[str, Any]:
+    """Test S2 API using provided (or env) key."""
+    try:
+        import httpx
+
+        api_key = body.get("api_key") or os.getenv("SEMANTIC_SCHOLAR_API_KEY")
+        url = "https://api.semanticscholar.org/graph/v1/paper/search?query=transformer&limit=1&fields=paperId"
+
+        with httpx.Client(trust_env=False) as client:
+            headers: dict[str, str] = {"Accept": "application/json"}
+            if api_key:
+                headers["x-api-key"] = api_key
+            print(f"[S2_DEBUG] headers={headers}", flush=True)
+            resp = client.get(url, headers=headers, timeout=15.0)
+            print(f"[S2_DEBUG] status={resp.status_code} headers={dict(resp.headers)} body={resp.text[:200]}", flush=True)
+            resp.raise_for_status()
+            data = resp.json()
+            total = data.get("total", 0)
+        return {"ok": True, "message": f"S2 API 正常，搜索到 {total} 篇论文"}
+    except httpx.HTTPStatusError as e:
+        detail = e.response.text[:150] if e.response.text else ""
+        debug_key = (api_key[:8] + "...") if api_key else "(empty)"
+        return {"ok": False, "message": f"S2 请求失败 (HTTP {e.response.status_code}): {detail} [key={debug_key}]"}
+    except Exception as e:
+        return {"ok": False, "message": f"S2 测试失败: {str(e)[:200]}"}
+
+
+@app.post("/api/test/openalex", tags=["测试"], summary="测试 OpenAlex API")
+async def test_openalex(body: dict[str, Any] = Body({})) -> dict[str, Any]:
+    """Test OA API using provided (or env) mailto."""
+    try:
+        import httpx
+
+        mailto = body.get("mailto") or os.getenv("OPENALEX_MAILTO")
+        url = "https://api.openalex.org/works?search=machine+learning&per_page=1"
+        if mailto:
+            url += f"&mailto={mailto}"
+        resp = httpx.get(url, timeout=15.0)
+        resp.raise_for_status()
+        data = resp.json()
+        count = data.get("meta", {}).get("count", 0)
+        return {"ok": True, "message": f"OA API 正常，搜索到 {count:,} 篇论文"}
+    except httpx.HTTPStatusError as e:
+        return {"ok": False, "message": f"OA 请求失败 (HTTP {e.response.status_code})"}
+    except Exception as e:
+        return {"ok": False, "message": f"OA 测试失败: {str(e)[:200]}"}
 
 
 def main() -> None:
