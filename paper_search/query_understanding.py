@@ -39,21 +39,102 @@ def build_query_plan_llm(query: str) -> QueryPlan:
     is forced to return JSON conforming to the design-doc schema — no
     free-form JSON parsing needed.
     """
-    from langchain_core.messages import SystemMessage
+    from langchain_core.messages import HumanMessage, SystemMessage
 
     from .llm import get_fast_llm
     from .prompts import QUERY_UNDERSTANDING_PROMPT
     from .schemas import QueryPlanSchema
 
     llm = get_fast_llm(temperature=0.0)
-    structured_llm = llm.with_structured_output(QueryPlanSchema, method="function_calling")
     prompt_text = QUERY_UNDERSTANDING_PROMPT.replace("{query}", query)
 
-    result: QueryPlanSchema = structured_llm.invoke([
+    response = llm.invoke([
         SystemMessage(content=prompt_text),
+        HumanMessage(content="请根据上述要求分析此查询并输出结构化结果。返回 JSON 格式，不要包含其他文字。"),
     ])
 
+    raw = response.content if hasattr(response, "content") else str(response)
+    result = _parse_query_plan_json(raw, query)
     return result.to_query_plan(original_query=query)
+
+
+def _parse_query_plan_json(raw: str, query: str) -> QueryPlanSchema:
+    """Parse LLM JSON response into QueryPlanSchema with fallback."""
+    import json
+
+    text = raw.strip()
+    # Try to extract JSON block
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end > start:
+        text = text[start: end + 1]
+
+    try:
+        data = json.loads(text)
+        return QueryPlanSchema(**data)
+    except (json.JSONDecodeError, Exception):
+        logger.warning("LLM JSON parse failed, falling back to rule-based query plan")
+        return _build_fallback_query_plan(query)
+
+
+def _build_fallback_query_plan(query: str) -> QueryPlanSchema:
+    """Build a minimal QueryPlanSchema when LLM output is unparseable."""
+    from .schemas import (
+        ApiPayloadTranslationSchema,
+        HardFiltersSchema,
+        IntentAnalysisSchema,
+        OAPayloadSchema,
+        QueryExpansionPolicySchema,
+        QueryPlanSchema,
+        RankingSignalsSchema,
+        S2PayloadSchema,
+        SemanticQueriesSchema,
+        YearFilterSchema,
+    )
+
+    return QueryPlanSchema(
+        original_query=query,
+        intent_analysis=IntentAnalysisSchema(
+            domain="Academic Search",
+            query_type="semantic",
+            boundary_note="LLM query understanding failed, using fallback",
+        ),
+        hard_filters=HardFiltersSchema(
+            year=YearFilterSchema(
+                operator=">=",
+                value=2022,
+                relaxed_window=[2022, 2026],
+            ),
+        ),
+        ranking_signals=RankingSignalsSchema(
+            preferred_venues=["CVPR", "NeurIPS", "ICLR"],
+            venue_match_mode="fuzzy_match_and_bonus",
+            venue_as_hard_filter=False,
+        ),
+        semantic_queries=SemanticQueriesSchema(
+            core_concepts=[query, "academic research", "literature"],
+            methodologies=["academic search", "literature retrieval"],
+        ),
+        sub_queries_for_retrieval=[query, f"{query} survey", f"{query} method"],
+        query_expansion_policy=QueryExpansionPolicySchema(
+            enabled=True,
+            seed_paper_driven=True,
+            extract_terms_from=["title", "abstract", "keywords"],
+            max_rounds=2,
+        ),
+        api_payload_translation=ApiPayloadTranslationSchema(
+            semantic_scholar=[
+                S2PayloadSchema(query=query, year="2022-"),
+                S2PayloadSchema(query=f"{query} survey", year="2022-"),
+                S2PayloadSchema(query=f"{query} method", year="2022-"),
+            ],
+            openalex=[
+                OAPayloadSchema(search=query, filter="publication_year:>2021"),
+                OAPayloadSchema(search=f"{query} survey", filter="publication_year:>2021"),
+                OAPayloadSchema(search=f"{query} method", filter="publication_year:>2021"),
+            ],
+        ),
+    )
 
 
 def _build_query_plan_rules(query: str) -> QueryPlan:
