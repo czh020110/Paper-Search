@@ -529,7 +529,7 @@ Embedding 并发: <b>EMBEDDING_CONCURRENCY</b>=10 workers, RPS 限速: <b>EMBEDD
 <script>
 const STAGES = ['query_understanding','initial_retrieval','snowball','coarse','rerank','judge'];
 const STAGE_LABELS = {'query_understanding':'🔍 查询理解','initial_retrieval':'📡 多源检索','snowball':'❄️ 滚雪球','coarse':'🔢 粗筛','rerank':'🎯 重排序','judge':'⚖️ 精筛判定'};
-const STAGE_SKIPPED = new Set(['snowball']);  // snowball is stubs — always skipped
+const STAGE_SKIPPED = new Set([]);  // snowball implemented (S-005), no longer skipped
 
 function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function fmtScore(s) { return s != null ? s.toFixed(2) : '-'; }

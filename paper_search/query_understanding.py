@@ -40,6 +40,7 @@ def build_query_plan_llm(query: str) -> QueryPlan:
     free-form JSON parsing needed.
     """
     from langchain_core.messages import HumanMessage, SystemMessage
+    from langchain_core.prompts import ChatPromptTemplate
 
     from .llm import get_fast_llm
     from .prompts import QUERY_UNDERSTANDING_PROMPT
@@ -59,22 +60,157 @@ def build_query_plan_llm(query: str) -> QueryPlan:
 
 
 def _parse_query_plan_json(raw: str, query: str) -> QueryPlanSchema:
-    """Parse LLM JSON response into QueryPlanSchema with fallback."""
+    """Parse LLM JSON into QueryPlanSchema with defaults for missing fields.
+
+    Uses ``model_construct`` (skips validation) so partial LLM output is
+    still usable — missing fields fall back to the schema's defaults.
+    Falls back to a rule-based plan when JSON cannot be extracted at all.
+    """
     import json
 
     text = raw.strip()
-    # Try to extract JSON block
+    # Extract JSON block
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end > start:
         text = text[start: end + 1]
+    else:
+        logger.warning("No JSON block found in LLM response, using fallback")
+        return _build_fallback_query_plan(query)
 
     try:
-        data = json.loads(text)
-        return QueryPlanSchema(**data)
-    except (json.JSONDecodeError, Exception):
-        logger.warning("LLM JSON parse failed, falling back to rule-based query plan")
+        data: dict[str, object] = json.loads(text)
+    except json.JSONDecodeError:
+        logger.warning("LLM JSON decode failed, using fallback")
         return _build_fallback_query_plan(query)
+
+    # Build schema with defaults for missing fields via model_construct
+    return _build_schema_from_partial(data, query)
+
+
+def _build_schema_from_partial(data: dict[str, object], query: str) -> QueryPlanSchema:
+    """Build a QueryPlanSchema from partial LLM output, filling defaults."""
+    from .schemas import (
+        ApiPayloadTranslationSchema,
+        HardFiltersSchema,
+        IntentAnalysisSchema,
+        OAPayloadSchema,
+        QueryExpansionPolicySchema,
+        QueryPlanSchema,
+        RankingSignalsSchema,
+        S2PayloadSchema,
+        SemanticQueriesSchema,
+        YearFilterSchema,
+    )
+
+    # intent_analysis
+    ia_raw = data.get("intent_analysis")
+    if isinstance(ia_raw, dict):
+        intent_analysis = IntentAnalysisSchema.model_construct(
+            domain=ia_raw.get("domain", "Academic Search"),
+            query_type=ia_raw.get("query_type", "semantic"),
+            boundary_note=ia_raw.get("boundary_note", ""),
+        )
+    else:
+        intent_analysis = IntentAnalysisSchema(
+            domain="Academic Search", query_type="semantic", boundary_note=""
+        )
+
+    # hard_filters
+    hf_raw = data.get("hard_filters")
+    year_val = 2022
+    if isinstance(hf_raw, dict):
+        year_raw = hf_raw.get("year", {})
+        if isinstance(year_raw, dict):
+            year_val = year_raw.get("value", 2022)
+    hard_filters = HardFiltersSchema(year=YearFilterSchema(
+        operator=">=", value=year_val, relaxed_window=[year_val, max(year_val, 2026)],
+    ))
+
+    # ranking_signals
+    rs_raw = data.get("ranking_signals")
+    if isinstance(rs_raw, dict):
+        preferred = rs_raw.get("preferred_venues", ["CVPR", "NeurIPS", "ICLR"])
+        ranking_signals = RankingSignalsSchema(
+            preferred_venues=preferred,
+            venue_match_mode="fuzzy_match_and_bonus",
+            venue_as_hard_filter=False,
+        )
+    else:
+        ranking_signals = RankingSignalsSchema(
+            preferred_venues=["CVPR", "NeurIPS", "ICLR"],
+        )
+
+    # semantic_queries — pad to meet Pydantic min_length
+    sq_raw = data.get("semantic_queries")
+    if isinstance(sq_raw, dict):
+        core = list(sq_raw.get("core_concepts", [query]))
+        methods = list(sq_raw.get("methodologies", ["academic search"]))
+    else:
+        core = [query]
+        methods = ["academic search"]
+    # Pad core_concepts to at least 3, methodologies to at least 2
+    while len(core) < 3:
+        core.append(core[0] if core else query)
+    while len(methods) < 2:
+        methods.append(methods[0] if methods else "academic search")
+    semantic_queries = SemanticQueriesSchema(core_concepts=core, methodologies=methods)
+
+    # sub_queries
+    raw_sq = data.get("sub_queries_for_retrieval", [query])
+    sub_queries = list(raw_sq) if isinstance(raw_sq, list) else [query]
+    if len(sub_queries) < 3:
+        while len(sub_queries) < 3:
+            sub_queries.append(sub_queries[0] if sub_queries else query)
+
+    # api_payload_translation
+    apt_raw = data.get("api_payload_translation")
+    s2_payloads: list[dict[str, object]] = []
+    oa_payloads: list[dict[str, object]] = []
+    if isinstance(apt_raw, dict):
+        s2_raw = apt_raw.get("semantic_scholar", [])
+        oa_raw = apt_raw.get("openalex", [])
+        if isinstance(s2_raw, list):
+            s2_payloads = [p for p in s2_raw if isinstance(p, dict)]
+        if isinstance(oa_raw, list):
+            oa_payloads = [p for p in oa_raw if isinstance(p, dict)]
+
+    # Ensure at least one payload per sub_query
+    if not s2_payloads:
+        s2_payloads = [{"query": q, "year": f"{year_val}-"} for q in sub_queries]
+    if not oa_payloads:
+        oa_payloads = [{"search": q, "filter": f"publication_year:>{year_val - 1}"} for q in sub_queries]
+
+    # Build typed payload lists
+    s2_typed = [S2PayloadSchema(query=str(p.get("query", q)), year=str(p.get("year", f"{year_val}-")))
+                for p, q in zip(s2_payloads, sub_queries)]
+    oa_typed = [OAPayloadSchema(search=str(p.get("search", q)), filter=str(p.get("filter", f"publication_year:>{year_val - 1}")))
+                for p, q in zip(oa_payloads, sub_queries)]
+
+    api_payload_translation = ApiPayloadTranslationSchema(
+        semantic_scholar=s2_typed, openalex=oa_typed,
+    )
+
+    # query_expansion_policy
+    qep_raw = data.get("query_expansion_policy")
+    if isinstance(qep_raw, dict):
+        query_expansion_policy = QueryExpansionPolicySchema.model_construct(**{
+            k: v for k, v in qep_raw.items()
+            if k in ("enabled", "seed_paper_driven", "extract_terms_from", "max_rounds")
+        })
+    else:
+        query_expansion_policy = QueryExpansionPolicySchema()
+
+    return QueryPlanSchema(
+        original_query=query,
+        intent_analysis=intent_analysis,
+        hard_filters=hard_filters,
+        ranking_signals=ranking_signals,
+        semantic_queries=semantic_queries,
+        sub_queries_for_retrieval=sub_queries,
+        api_payload_translation=api_payload_translation,
+        query_expansion_policy=query_expansion_policy,
+    )
 
 
 def _build_fallback_query_plan(query: str) -> QueryPlanSchema:
