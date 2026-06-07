@@ -385,6 +385,8 @@ _SEARCH_PAGE_HTML = """<!DOCTYPE html>
   button { padding: 12px 24px; background: #1a1a2e; color: #fff; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; }
   button:hover { background: #16213e; }
   button:disabled { background: #aaa; cursor: not-allowed; }
+  button.btn-interrupt { background: #d32f2f; }
+  button.btn-interrupt:hover { background: #b71c1c; }
   .result { background: #fff; border-radius: 8px; padding: 20px; border: 1px solid #e0e0e0; }
   .result h2 { margin-top: 0; color: #1a1a2e; font-size: 18px; }
   .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 10px; margin-bottom: 16px; }
@@ -480,10 +482,12 @@ API: <b>LLM_PROVIDER</b> → <b>OPENAI_BASE_URL</b><br>
 可选参数: <b>SEMANTIC_SCHOLAR_API_KEY</b>（有 key 提升限速），<b>OPENALEX_MAILTO</b>（礼貌池）<br>
 navigational 查询 → 标题精确匹配；semantic → 多角度语义扩展；metadata → 优先消费 api_payload_translation<br><br>
 
-<b>❄️ 滚雪球(当前只占位，后续实现)</b><br>
-LLM 驱动 query evolution + 选择性引文扩展。<br>
-调用 <b>LLM_FAST_MODEL</b> 提取新关键词 → API 补召回 → Reranker/LLM 高分论文做双向引文追踪。<br>
-收敛条件: 重叠率 &gt;70%、无新关键词、最大轮数 3 或预算耗尽（当前为桩模块，跳过）<br><br>
+<b>❄️ 滚雪球</b><br>
+基于 LLM 判定的高分论文自动扩展检索范围。<br>
+- query_evolution: 调用 <b>LLM_FAST_MODEL</b> 从"高度相关"论文提取 3-5 个新关键词<br>
+- re_search: 新关键词再次调 S2/OA API 补召回，去重后加入候选池<br>
+- expand_citations: 对高分论文调 S2/OA 引文/参考文献 API，记录引文关系<br>
+收敛条件: 重叠率 &gt;70%、无新关键词、最大轮数 3 或预算耗尽<br><br>
 
 <b>🔢 粗筛</b>（候选池 &gt; <b>COARSE_POOL_SKIP_THRESHOLD</b>=40 时触发）<br>
 三路混合打分（min-max 归一化 + 加权融合）:<br>
@@ -562,7 +566,7 @@ function buildStages() {
 }
 
 function setStage(id, done) {
-  if (STAGE_SKIPPED.has(id)) return; // skip stubs
+  if (STAGE_SKIPPED.has(id)) return;
   const el = document.getElementById('sg-'+id);
   if (el) { el.style.opacity = done ? '1' : '0.6'; }
 }
@@ -590,16 +594,32 @@ async function doSearch() {
   const resultDiv = document.getElementById('result');
   const progressDiv = document.getElementById('progress');
 
+  // Cancel existing search if running
+  if (btn.dataset.searching === '1') {
+    if (window._evtSource) { window._evtSource.close(); window._evtSource = null; }
+    btn.dataset.searching = '0';
+    btn.className = '';
+    btn.textContent = '检索';
+    progressDiv.style.display = 'none';
+    return;
+  }
+
+  // Immediately switch to interrupt state
+  btn.dataset.searching = '1';
+  btn.className = 'btn-interrupt';
+  btn.textContent = '中断';
+  resultDiv.innerHTML = '';
+
   // Pre-flight: check config readiness
   const vRes = await fetch('/api/config/validate');
   const vData = await vRes.json();
   if (!vData.ready) {
+    btn.dataset.searching = '0';
+    btn.className = '';
+    btn.textContent = '检索';
     resultDiv.innerHTML = '<p class=\"error\">配置未完成，缺少必需字段：' + vData.missing.join(', ') + '<br>请点击右上角 ⚙ 完成配置后再检索。</p>';
     return;
   }
-
-  btn.disabled = true; btn.textContent = '检索中...';
-  resultDiv.innerHTML = '';
 
   // Show progress UI
   document.getElementById('stage-list').innerHTML = buildStages();
@@ -609,7 +629,8 @@ async function doSearch() {
   setProgress(0, STAGES.length);
 
   // Use SSE streaming endpoint
-  const evtSource = new EventSource('/api/search/stream?q=' + encodeURIComponent(query));
+  window._evtSource = new EventSource('/api/search/stream?q=' + encodeURIComponent(query));
+  const evtSource = window._evtSource;
   let papers = [], evaluation = {};
 
   evtSource.addEventListener('keys', function(e) {
@@ -629,9 +650,10 @@ async function doSearch() {
 
   evtSource.addEventListener('result', function(e) {
     evtSource.close();
-    const d = JSON.parse(e.data);
-    papers = d.papers || [];
-    evaluation = d.evaluation || {};
+    if (window._evtSource === evtSource) window._evtSource = null;
+    btn.dataset.searching = '0';
+    btn.className = '';
+    btn.textContent = '检索';
 
     // Render results
     let html = '<div class="result"><h2>检索结果</h2>';
@@ -681,15 +703,18 @@ async function doSearch() {
     resultDiv.innerHTML = html;
     // Apply timings from SSE result event directly as tooltip on stage labels
     if (d.timings) { applyTimings(d.timings); }
-    btn.disabled = false;
+    btn.dataset.searching = '0';
+    btn.className = '';
     btn.textContent = '检索';
   });
 
   evtSource.addEventListener('error', function(e) {
     evtSource.close();
+    if (window._evtSource === evtSource) window._evtSource = null;
     resultDiv.innerHTML = '<p class="error">检索失败：连接中断或超时</p>';
     progressDiv.style.display = 'none';
-    btn.disabled = false;
+    btn.dataset.searching = '0';
+    btn.className = '';
     btn.textContent = '检索';
   });
 }

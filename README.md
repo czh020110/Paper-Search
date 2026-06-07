@@ -7,7 +7,7 @@
 1. 基础设施与统一数据契约：先确认配置、API Key、安全、缓存、日志、实验记录、输出目录和统一 Paper 数据模型。
 2. 参考系统前置研究：在业务模块实现前吸收 PaSa-7B、SPAR、Ai2 Paper Finder、PaperQA2 的可落地策略。
 3. 贯穿式评测基线与输出契约：先建立小型 golden set、统一输出 schema 和实验记录口径，再推进查询理解与检索实现。
-4. 查询理解与分解 -> 初检索 -> 滚雪球 -> 粗筛 -> 中筛 -> 精筛 -> 结果整理。
+4. 查询理解与分解 -> 初检索 -> 粗筛 -> 中筛 -> 精筛 -> 滚雪球 -> 结果整理。
 5. 公开测试集回归、效率调优与提交前锁定。
 
 ## 示例查询与数据流说明
@@ -113,9 +113,12 @@
 
 4. 模块二:初检索, 初次检索不再只使用单条 query 获取 10 篇"种子文献"，而是对 `sub_queries_for_retrieval` 逐条调用 Semantic Scholar 与 OpenAlex 两家学术论文检索 API（Semantic Scholar 侧重计算机科学和生物医学领域的语义搜索，OpenAlex 为开放学术索引覆盖面广），每个 query × 每个 API 各取一批结果，合并去重后形成 30~50 篇"种子文献"候选池。初检索阶段优先保证召回，坏种子交由后续粗筛、Reranker 与 LLM 精筛收口；完成后记录最小 golden set 的召回情况、API 调用数和耗时。与此同时，初检索不再对所有查询使用同一条检索路径，而是根据 `intent_analysis.query_type` 选择不同策略：`navigational` 优先走标题精确匹配路径，`semantic` 优先走多角度语义扩展检索路径，`metadata` 优先消费 `api_payload_translation` 中的结构化过滤参数；`api_payload_translation` 在初检索阶段必须被实际使用，而不是只作为中间产物生成后闲置。
 
-5. 模块三：滚雪球模块:调用 api 获取种子论文的 References(引用)和 Citations(被引用), 将这些论文加入候选池. （提高召回）  
-   滚雪球不再只做无差别引文扩展，而是加入“LLM 驱动 query evolution + 选择性引文扩展”的迭代式检索闭环。具体做法如下：先根据初检索高分论文的标题、摘要和关键词，抽取第二轮检索词（如 `object hallucination`、`reward model`、`preference alignment` 等），回到检索 API 再做一轮补召回；随后仅对 Reranker（一种基于深度学习的精细排序模型，以原始查询与论文标题/摘要为输入，输出每篇论文的精准相关度分数）或 LLM 判为高相关或部分相关、且分数靠前的论文继续展开 References/Citations，按相关度优先级滚动扩展，而不是对全部种子无差别展开。  
-   滚雪球需要多次滚动，每次通过 API 拉取一批新文献后，立刻与现有候选池（Paper Pool）做集合求交（基于 DOI、ArXiv ID、Semantic Scholar paperId、OpenAlex ID 或归一化 Title）。当新增论文与候选池重叠超过 70%、连续一轮没有新增高价值关键词、达到最大轮数（2~3 轮）或触发预算上限（API 调用数 / 候选池上限 / 单篇最大扩展数）时停止滚动。过程中发现的引文关系（谁引用了谁、谁被谁引用）记录为 CitationEdge（包含 source_paper_id、target_paper_id、edge_type、discovered_round 等字段），供后续 graph.json 的 edges 数据使用。
+5. 模块三：滚雪球模块 — 在精筛完成后，基于 LLM 判定为”高度相关”的论文自动扩展检索范围。  
+   在精筛完成后执行（此时论文已有 LLM 相关性判定），调用 `run_snowball()` 通过 LangGraph StateGraph 迭代执行四个节点：  
+   - **query_evolution**: 用 `LLM_FAST_MODEL` 从”高度相关”论文提取 3-5 个未覆盖的新关键词  
+   - **re_search**: 新关键词再次调 S2/OA API 补召回，去重后以 `status=”expanded”` 加入候选池，计算重叠率  
+   - **expand_citations**: 对高分论文调 S2 references/citations + OA references/citations API，记录 `CitationEdge`  
+   - **check_convergence**: 重叠率 >70%、无新关键词、最大轮数(3) 或预算耗尽时停止滚动
 
 - 过滤：每次滚动仅对高可信字段做硬规则过滤，如年份边界、作者唯一限定等；venue 不做硬删除，只记录为强排序信号，交由后续排序和 LLM 终判。
 - 去重：优先比对 DOI、ArXiv ID、Semantic Scholar paperId、OpenAlex ID；缺失统一 ID 时再按标题去除标点、空格并转小写后进行归一化字符串匹配。
@@ -386,7 +389,7 @@ uv run python -m pytest tests/ -v
 
 - [x] S-004：初检索模块实现（S2+OA 双源并行）
 - [x] S-003.5：公共服务底座打通（缓存/预算/状态机/日志）
-- [ ] S-005：滚雪球模块实现（LangGraph 骨架已搭建，节点为桩）
+- [x] S-005：滚雪球模块实现（LLM query evolution + S2/OA 引文扩展 + LangGraph 迭代）
 - [ ] S-005.5：双模式运行（fast / exhaustive）
 - [x] S-006：粗筛模块实现（BM25 + DashScope Embedding + Structure 三路融合，≤40 跳过，Embedding 硬底线 0.35，三路权重 0.35/0.35/0.30）
 - [x] S-007：中筛模块实现（qwen3-rerank API 远程重排，相对阈值 mean×0.7 + Top-30 保底）
