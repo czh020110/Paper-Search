@@ -10,6 +10,8 @@ from typing import Any, Callable
 from ..budget import BudgetController
 from ..cache import CacheStore
 from ..contracts import Paper, QueryPlan
+from .arxiv import search_arxiv, search_arxiv_by_title
+from .dblp import search_dblp, search_dblp_by_title
 from .openalex import search_works, search_works_by_title
 from .semantic_scholar import search_papers, search_papers_by_title
 
@@ -26,6 +28,8 @@ def retrieve_live_papers(query_plan: QueryPlan, cache: CacheStore | None = None,
 
     s2_callables: list[Callable[[], list[Paper]]] = []
     oa_callables: list[Callable[[], list[Paper]]] = []
+    arxiv_callables: list[Callable[[], list[Paper]]] = []
+    dblp_callables: list[Callable[[], list[Paper]]] = []
 
     year_from = _extract_year_from(query_plan)
 
@@ -33,6 +37,8 @@ def retrieve_live_papers(query_plan: QueryPlan, cache: CacheStore | None = None,
         for sub_query in query_plan.sub_queries_for_retrieval:
             s2_callables.append(lambda q=sub_query: search_papers_by_title(title=q, limit=10, cache=cache))
             oa_callables.append(lambda q=sub_query: search_works_by_title(title=q, per_page=10, cache=cache))
+            arxiv_callables.append(lambda q=sub_query: search_arxiv_by_title(title=q, max_results=5))
+            dblp_callables.append(lambda q=sub_query: search_dblp_by_title(title=q, max_results=5))
     else:
         # Prefer api_payload_translation when available, but strip CJK from query text
         # since S2/OA are English-focused APIs that return poor results for Chinese queries
@@ -66,6 +72,16 @@ def retrieve_live_papers(query_plan: QueryPlan, cache: CacheStore | None = None,
             for query in english_queries:
                 oa_callables.append(lambda q=query, y=year_from: search_works(query=q, year_from=y, per_page=25, cache=cache))
 
+    # arXiv and DBLP: always add parallel searches (free APIs, no key needed)
+    if not arxiv_callables:
+        eq = _build_english_queries(query_plan)
+        for query in (eq or query_plan.sub_queries_for_retrieval):
+            arxiv_callables.append(lambda q=query: search_arxiv(query=q, max_results=20))
+    if not dblp_callables:
+        eq = _build_english_queries(query_plan)
+        for query in (eq or query_plan.sub_queries_for_retrieval):
+            dblp_callables.append(lambda q=query: search_dblp(query=q, max_results=20))
+
     all_papers: list[Paper] = []
 
     # S2 rate-limits: without an API key ~1 rps → sequential with delay;
@@ -87,26 +103,29 @@ def retrieve_live_papers(query_plan: QueryPlan, cache: CacheStore | None = None,
             logger.warning("S2 task %d/%d failed", idx + 1, len(s2_callables), exc_info=True)
         return []
 
-    # Submit S2 + OA tasks into the same thread-pool so they run concurrently.
-    max_workers = max(4, len(s2_callables) + len(oa_callables))
+    # Submit S2 + OA + arXiv + DBLP tasks into the same thread-pool.
+    max_workers = max(4, len(s2_callables) + len(oa_callables) + len(arxiv_callables) + len(dblp_callables))
     if not has_s2_key:
         # No S2 key → run S2 sequentially in one thread to stay under 1 rps.
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             s2_future = executor.submit(_run_s2_sequential, s2_callables, budget, has_s2_key) if s2_callables else None
             oa_futures = {executor.submit(fn): fn for fn in oa_callables}
+            ax_futures = {executor.submit(fn): fn for fn in arxiv_callables}
+            db_futures = {executor.submit(fn): fn for fn in dblp_callables}
             if s2_future:
                 s2_result = s2_future.result()
                 if isinstance(s2_result, list):
                     all_papers.extend(s2_result)
-            for future in as_completed(oa_futures):
-                try:
-                    result = future.result()
-                    if isinstance(result, list):
-                        all_papers.extend(result)
-                except Exception:
-                    pass
+            for futures in (oa_futures, ax_futures, db_futures):
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                        if isinstance(result, list):
+                            all_papers.extend(result)
+                    except Exception:
+                        pass
     else:
-        # S2 key available → all S2 + OA tasks run in parallel.
+        # S2 key available → all tasks run in parallel.
         def _call_one(fn: Callable[[], list[Paper]], label: str, idx: int, total: int) -> list[Paper]:
             if budget and not budget.can_call_api():
                 logger.info("%s skipped task %d/%d (budget exhausted)", label, idx + 1, total)
@@ -114,7 +133,7 @@ def retrieve_live_papers(query_plan: QueryPlan, cache: CacheStore | None = None,
             try:
                 r = fn()
                 if isinstance(r, list):
-                    if budget:
+                    if budget and label in ("S2", "OA"):
                         budget.increment_api_calls()
                     logger.info("%s retrieved %d papers (task %d/%d)", label, len(r), idx + 1, total)
                     return r
@@ -130,6 +149,10 @@ def retrieve_live_papers(query_plan: QueryPlan, cache: CacheStore | None = None,
                 futures[executor.submit(_call_one, fn, "S2", i, s2_total)] = None
             for i, fn in enumerate(oa_callables):
                 futures[executor.submit(_call_one, fn, "OA", i, oa_total)] = None
+            for i, fn in enumerate(arxiv_callables):
+                futures[executor.submit(_call_one, fn, "arXiv", i, len(arxiv_callables))] = None
+            for i, fn in enumerate(dblp_callables):
+                futures[executor.submit(_call_one, fn, "DBLP", i, len(dblp_callables))] = None
             for future in as_completed(futures):
                 try:
                     result = future.result()

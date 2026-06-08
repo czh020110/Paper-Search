@@ -890,6 +890,9 @@ function testOA() {
   });
 }
 
+function testArxiv() { _callTest('/api/test/arxiv', 'btn-test-arxiv'); }
+function testDblp() { _callTest('/api/test/dblp', 'btn-test-dblp'); }
+
 function testEmbedding() {
   const btn = document.getElementById('btn-test-emb');
   if (btn) { btn.disabled = true; btn.textContent = '测试中...'; }
@@ -1044,6 +1047,10 @@ loadConfig();
 <div class="row">
   <div><label>S2 API Key (可选)</label><input id="cfg-SEMANTIC_SCHOLAR_API_KEY" placeholder="留空使用公共端点"><button id="btn-test-s2" type="button" class="test-btn test-btn-idle" onclick="testS2()" style="margin-left:4px">测试 S2</button></div>
   <div><label>OpenAlex 礼貌邮箱 (可选)</label><input id="cfg-OPENALEX_MAILTO" placeholder="your-email@example.com"><button id="btn-test-oa" type="button" class="test-btn test-btn-idle" onclick="testOA()" style="margin-left:4px">测试 OA</button></div>
+</div>
+<div class="row">
+  <div><label>arXiv（免费）</label><button id="btn-test-arxiv" type="button" class="test-btn test-btn-idle" onclick="testArxiv()" style="margin-left:4px">测试 arXiv</button></div>
+  <div><label>DBLP（免费）</label><button id="btn-test-dblp" type="button" class="test-btn test-btn-idle" onclick="testDblp()" style="margin-left:4px">测试 DBLP</button></div>
 </div>
 
 <h3>Embedding / Reranker</h3>
@@ -1246,6 +1253,34 @@ async def test_openalex(body: dict[str, Any] = Body({})) -> dict[str, Any]:
         return {"ok": False, "message": f"OA 请求失败 (HTTP {e.response.status_code})"}
     except Exception as e:
         return {"ok": False, "message": f"OA 测试失败: {str(e)[:200]}"}
+
+
+@app.post("/api/test/arxiv", tags=["测试"], summary="测试 arXiv API")
+async def test_arxiv() -> dict[str, Any]:
+    """Test arXiv API by searching for a simple query."""
+    try:
+        from httpx import get as hget
+        url = "https://export.arxiv.org/api/query?search_query=all:transformer&max_results=1"
+        resp = hget(url, timeout=15.0)
+        if resp.status_code == 200 and "<entry>" in resp.text:
+            return {"ok": True, "message": "arXiv API 正常"}
+        return {"ok": False, "message": f"arXiv 返回异常 (HTTP {resp.status_code})"}
+    except Exception as e:
+        return {"ok": False, "message": f"arXiv 测试失败: {str(e)[:200]}"}
+
+
+@app.post("/api/test/dblp", tags=["测试"], summary="测试 DBLP API")
+async def test_dblp() -> dict[str, Any]:
+    """Test DBLP API by searching for a simple query."""
+    try:
+        import httpx
+        resp = httpx.get("https://dblp.org/search/publ/api?q=transformer&format=json&h=1", timeout=15.0)
+        resp.raise_for_status()
+        data = resp.json()
+        total = int(data.get("result", {}).get("hits", {}).get("@total", 0))
+        return {"ok": True, "message": f"DBLP API 正常，搜索到 {total} 篇论文"}
+    except Exception as e:
+        return {"ok": False, "message": f"DBLP 测试失败: {str(e)[:200]}"}
 
 
 def main() -> None:
