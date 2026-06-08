@@ -25,7 +25,7 @@ ARXIV_BASE_URL = "https://export.arxiv.org/api/query"
 # arXiv returns Atom XML with a specific namespace
 _ARXIV_NS = {"atom": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
 
-MAX_RETRIES = 3
+MAX_RETRIES = 1  # single attempt; arXiv is slow, don't block pipeline
 RETRY_BACKOFF = 1.0
 
 
@@ -61,7 +61,7 @@ def _request_with_retry(url: str) -> str:
     """Fetch the Atom XML response with retry logic."""
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            response = httpx.get(url, timeout=30.0)
+            response = httpx.get(url, timeout=8.0)
             response.raise_for_status()
             return response.text
         except (httpx.HTTPStatusError, httpx.RequestError) as e:
