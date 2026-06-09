@@ -223,6 +223,7 @@ def _config_schema() -> dict[str, dict[str, Any]]:
         "EMBEDDING_CONCURRENCY": {"type": "int", "default": "10"},
         "EMBEDDING_RPS_LIMIT": {"type": "int", "default": "15"},
         "EMBEDDING_ENABLED": {"type": "bool", "default": "true"},
+        "RERANKER_ENABLED": {"type": "bool", "default": "false"},
         # Judge
         "JUDGE_CONCURRENCY": {"type": "int", "default": "100"},
         "JUDGE_WAVE_CAP": {"type": "int", "default": "5000"},
@@ -231,26 +232,24 @@ def _config_schema() -> dict[str, dict[str, Any]]:
 
 _REQUIRED_CONFIG_KEYS = [
     "LLM_MODEL", "LLM_FAST_MODEL", "LLM_API_KEY",
-    "RERANKER_API_KEY", "RERANKER_MODEL",
     "EMBEDDING_API_KEY", "EMBEDDING_MODEL",
+    "RERANKER_API_KEY", "RERANKER_MODEL",
 ]
 
 
 def _is_config_ready() -> dict[str, Any]:
-    """Check whether all required config values are set.
-
-    Returns a dict with ``ready`` (bool) and ``missing`` (list[str]).
-    ``EMBEDDING_*`` are only required when ``EMBEDDING_ENABLED`` is true.
-    """
+    """Check whether all required config values are set."""
     missing: list[str] = []
     for key in _REQUIRED_CONFIG_KEYS:
         val = os.getenv(key, "").strip()
         if not val:
             missing.append(key)
-    # Embedding is only required if enabled
     embedding_enabled = os.getenv("EMBEDDING_ENABLED", "true").lower() not in ("0", "false", "no")
     if not embedding_enabled:
         missing = [m for m in missing if not m.startswith("EMBEDDING_")]
+    reranker_enabled = os.getenv("RERANKER_ENABLED", "false").lower() not in ("0", "false", "no")
+    if not reranker_enabled:
+        missing = [m for m in missing if not m.startswith("RERANKER_")]
     ready = len(missing) == 0
     return {"ready": ready, "missing": missing}
 
@@ -283,6 +282,7 @@ _CONFIG_HELP: dict[str, str] = {
     "EMBEDDING_CONCURRENCY": "Embedding 并发 worker 数。过大触发 API 限流。示例：10",
     "EMBEDDING_RPS_LIMIT": "Embedding API 每秒最大请求数。token bucket 限流。示例：15",
     "EMBEDDING_ENABLED": "是否启用 Embedding 稠密检索。关闭后三路退化为 BM25+Structure。",
+    "RERANKER_ENABLED": "是否启用 Reranker 重排序。关闭后跳过此阶段，论文直接透传到精筛。",
     "JUDGE_CONCURRENCY": "精筛 LLM 并发调用数。示例：100",
     "JUDGE_WAVE_CAP": "精筛单次 wave 处理上限。超过此数量分批处理。示例：5000",
 }
@@ -464,6 +464,7 @@ _SEARCH_PAGE_HTML = """<!DOCTYPE html>
   .test-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   /* Embedding disabled state */
   .emb-disabled { opacity: 0.4; pointer-events: none; }
+  .reranker-disabled { opacity: 0.4; pointer-events: none; }
 </style>
 </head>
 <body>
@@ -780,6 +781,7 @@ function openConfig() {
   updateThinkingOptions();
   _renderHelpIcons();
   updateEmbDependent();
+  updateRerankerDependent();
   _snapshotForm();
 }
 
@@ -893,33 +895,17 @@ function testOA() {
 function testArxiv() { _callTest('/api/test/arxiv', 'btn-test-arxiv'); }
 function testDblp() { _callTest('/api/test/dblp', 'btn-test-dblp'); }
 
-function testEmbedding() {
-  const btn = document.getElementById('btn-test-emb');
-  if (btn) { btn.disabled = true; btn.textContent = '测试中...'; }
-  const embBody = {
+function testEmbeddingOnly() {
+  _callTest('/api/test/embedding', 'btn-test-emb', {
     api_key: _getFormValue('EMBEDDING_API_KEY'),
     model: _getFormValue('EMBEDDING_MODEL'),
-  };
-  const rerankBody = {
+  });
+}
+
+function testRerankerOnly() {
+  _callTest('/api/test/reranker', 'btn-test-reranker', {
     api_key: _getFormValue('RERANKER_API_KEY'),
     model: _getFormValue('RERANKER_MODEL'),
-  };
-  Promise.all([
-    fetch('/api/test/embedding', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(embBody) }).then(function(r) { return r.json(); }),
-    fetch('/api/test/reranker', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(rerankBody) }).then(function(r) { return r.json(); }),
-  ]).then(function(d) {
-    var d1 = d[0], d2 = d[1];
-    var msg = 'Embedding: ' + (d1.ok ? 'OK' : 'Fail') + ' | Reranker: ' + (d2.ok ? 'OK' : 'Fail');
-    var allOk = d1.ok && d2.ok;
-    showTestToast(msg, allOk);
-    if (btn) {
-      btn.className = 'test-btn ' + (allOk ? 'test-btn-ok' : 'test-btn-fail');
-      btn.textContent = allOk ? 'OK' : '部分失败';
-      setTimeout(function() { btn.className = 'test-btn test-btn-idle'; btn.textContent = '测试'; btn.disabled = false; }, 4000);
-    }
-  }).catch(function(e) {
-    showTestToast('请求失败: ' + e.message, false);
-    if (btn) { btn.disabled = false; btn.textContent = '测试'; }
   });
 }
 
@@ -927,8 +913,7 @@ function testEmbedding() {
 function updateEmbDependent() {
   const cb = document.getElementById('cfg-EMBEDDING_ENABLED');
   const enabled = cb && cb.checked;
-  const els = document.querySelectorAll('.emb-dependent');
-  els.forEach(function(el) {
+  document.querySelectorAll('.emb-dependent').forEach(function(el) {
     if (enabled) {
       el.classList.remove('emb-disabled');
       el.querySelectorAll('input, select').forEach(function(inp) { inp.disabled = false; });
@@ -937,12 +922,31 @@ function updateEmbDependent() {
       el.querySelectorAll('input, select').forEach(function(inp) { inp.disabled = true; });
     }
   });
-  // Also update help icons
   _renderHelpIcons();
 }
 
 function onEmbeddingToggle() {
   updateEmbDependent();
+}
+
+// Reranker toggle: grey-out / enable dependent fields
+function updateRerankerDependent() {
+  const cb = document.getElementById('cfg-RERANKER_ENABLED');
+  const enabled = cb && cb.checked;
+  document.querySelectorAll('.reranker-dependent').forEach(function(el) {
+    if (enabled) {
+      el.classList.remove('reranker-disabled');
+      el.querySelectorAll('input, select').forEach(function(inp) { inp.disabled = false; });
+    } else {
+      el.classList.add('reranker-disabled');
+      el.querySelectorAll('input, select').forEach(function(inp) { inp.disabled = true; });
+    }
+  });
+  _renderHelpIcons();
+}
+
+function onRerankerToggle() {
+  updateRerankerDependent();
 }
 
 // ===================== End Test Functions =====================
@@ -987,6 +991,8 @@ function updateThinkingOptions() {
 function _renderHelpIcons() {
   var embeddingEnabled = document.getElementById('cfg-EMBEDDING_ENABLED');
   var embDisabled = embeddingEnabled && !embeddingEnabled.checked;
+  var rerankerEnabled = document.getElementById('cfg-RERANKER_ENABLED');
+  var rerankerDisabled = rerankerEnabled && !rerankerEnabled.checked;
   var allInputs = document.querySelectorAll('#config-form input[id], #config-form select[id]');
   allInputs.forEach(function(input) {
     if (!input.id || !input.id.startsWith('cfg-')) return;
@@ -1009,6 +1015,9 @@ function _renderHelpIcons() {
     var val = cv.value || '';
     var isMissing = cv.required && !val;
     if (cv.required && key.startsWith('EMBEDDING_') && embDisabled) {
+      isMissing = false;
+    }
+    if (cv.required && key.startsWith('RERANKER_') && rerankerDisabled) {
       isMissing = false;
     }
     if (isMissing) {
@@ -1060,18 +1069,22 @@ loadConfig();
 </div>
 <div class="row">
   <div class="emb-dependent"><label>Embedding API Key</label><input id="cfg-EMBEDDING_API_KEY" type="password" placeholder="sk-..."></div>
-  <div class="emb-dependent"><label>Reranker Provider</label><select id="cfg-RERANKER_PROVIDER"><option value="">(无)</option><option value="dashscope">DashScope</option></select></div>
+  <div class="reranker-dependent"><label>Reranker Provider</label><select id="cfg-RERANKER_PROVIDER"><option value="">(无)</option><option value="dashscope">DashScope</option></select></div>
 </div>
 <div class="row">
-  <div class="emb-dependent"><label>Reranker Model</label><input id="cfg-RERANKER_MODEL" placeholder="qwen3-rerank"></div>
-  <div class="emb-dependent"><label>Reranker API Key</label><input id="cfg-RERANKER_API_KEY" type="password" placeholder="sk-..."></div>
+  <div class="reranker-dependent"><label>Reranker Model</label><input id="cfg-RERANKER_MODEL" placeholder="qwen3-rerank"></div>
+  <div class="reranker-dependent"><label>Reranker API Key</label><input id="cfg-RERANKER_API_KEY" type="password" placeholder="sk-..."></div>
 </div>
 <div class="row">
   <div class="emb-dependent"><label>并发数</label><input id="cfg-EMBEDDING_CONCURRENCY" type="number" step="1"></div>
   <div class="emb-dependent"><label>RPS 限速</label><input id="cfg-EMBEDDING_RPS_LIMIT" type="number" step="1"></div>
   <div><label>启用 Embedding</label><input id="cfg-EMBEDDING_ENABLED" type="checkbox" style="width:auto;margin:6px 0 0" onchange="onEmbeddingToggle()"></div>
+  <div><label>启用 Reranker</label><input id="cfg-RERANKER_ENABLED" type="checkbox" style="width:auto;margin:6px 0 0" onchange="onRerankerToggle()"></div>
 </div>
-<div style="margin:-8px 0 12px;text-align:right"><button id="btn-test-emb" type="button" class="test-btn test-btn-idle" onclick="testEmbedding()">🔗 测试连接</button></div>
+<div style="margin:-8px 0 12px;text-align:right">
+  <button id="btn-test-emb" type="button" class="test-btn test-btn-idle" onclick="testEmbeddingOnly()" style="margin-right:6px">🔗 测试 Embedding</button>
+  <button id="btn-test-reranker" type="button" class="test-btn test-btn-idle" onclick="testRerankerOnly()">🔗 测试 Reranker</button>
+</div>
 
 <h3>粗筛 (Coarse)</h3>
 <div class="row">
