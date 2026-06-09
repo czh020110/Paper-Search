@@ -29,15 +29,41 @@ _DASHSCOPE_THINKING_MAP: dict[str, bool | None] = {
     "xhigh": True,
 }
 
+# SiliconFlow thinking mapping (same as DashScope — enable_thinking via extra_body)
+_SILICONFLOW_THINKING_MAP: dict[str, bool | None] = {
+    "off": None,
+    "none": False,
+    "minimal": False,
+    "low": True,
+    "medium": True,
+    "high": True,
+    "xhigh": True,
+}
+
+# ZhipuAI thinking mapping (supports thinking via extra_body for GLM models)
+_ZHIPUAI_THINKING_MAP: dict[str, bool | None] = {
+    "off": None,
+    "none": False,
+    "minimal": False,
+    "low": True,
+    "medium": True,
+    "high": True,
+    "xhigh": True,
+}
+
 
 def _resolve_provider() -> str:
-    """Return the current LLM provider: ``openai`` or ``dashscope``."""
+    """Return the current LLM provider: ``openai``, ``dashscope``, ``siliconflow``, or ``zhipuai``."""
     return os.getenv("LLM_PROVIDER", "openai").lower()
 
 
 def _resolve_api_key(provider: str) -> str | None:
     if provider == "dashscope":
         return os.getenv("LLM_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
+    if provider == "siliconflow":
+        return os.getenv("LLM_API_KEY") or os.getenv("SILICONFLOW_API_KEY")
+    if provider == "zhipuai":
+        return os.getenv("LLM_API_KEY") or os.getenv("ZHIPUAI_API_KEY")
     return os.getenv("LLM_API_KEY")
 
 
@@ -45,9 +71,12 @@ def _resolve_base_url(provider: str) -> str:
     base = os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_API_BASE")
     if base:
         return base
-    if provider == "dashscope":
-        return "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    return "https://api.openai.com/v1"
+    _DEFAULTS = {
+        "dashscope": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "siliconflow": "https://api.siliconflow.cn/v1",
+        "zhipuai": "https://open.bigmodel.cn/api/paas/v4",
+    }
+    return _DEFAULTS.get(provider, "https://api.openai.com/v1")
 
 
 def _resolve_model(fast: bool = False) -> str:
@@ -66,16 +95,14 @@ def _get_thinking_level() -> ThinkingLevel:
 def get_llm(model: str | None = None, temperature: float = 0.0) -> Any:
     """Return a LangChain ChatOpenAI instance configured from environment.
 
-    Uses ``LLM_PROVIDER`` to switch between backends.  Both ``openai`` and
-    ``dashscope`` use the same ``ChatOpenAI`` client — only the *base_url*
-    and *api_key* differ (DashScope exposes an OpenAI-compatible endpoint).
+    Uses ``LLM_PROVIDER`` to switch between backends.  All providers use
+    ``ChatOpenAI`` — only *base_url*, *api_key*, and thinking params differ.
 
-    When ``LLM_PROVIDER=dashscope``, ``LLM_API_KEY`` (or ``DASHSCOPE_API_KEY``)
-    is used and the base URL defaults to the DashScope compatible endpoint.
+    Supported providers: openai, dashscope, siliconflow, zhipuai.
 
     ``LLM_THINKING`` controls reasoning/thinking depth:
-      - ``off`` / ``minimal`` / ``low`` / ``medium`` / ``high`` for OpenAI
-      - ``off`` → enable_thinking=False, ``on`` → enable_thinking=True for DashScope
+      - OpenAI: reasoning_effort parameter
+      - DashScope / SiliconFlow / ZhipuAI: enable_thinking via extra_body
     """
     from langchain_openai import ChatOpenAI
 
@@ -88,8 +115,15 @@ def get_llm(model: str | None = None, temperature: float = 0.0) -> Any:
 
     thinking: ThinkingLevel = _get_thinking_level()
 
-    if provider == "dashscope":
-        enable_thinking = _DASHSCOPE_THINKING_MAP.get(thinking)
+    # Providers that use enable_thinking via extra_body (DashScope / SiliconFlow / ZhipuAI)
+    _THINKING_MAPS: dict[str, dict[str, bool | None]] = {
+        "dashscope": _DASHSCOPE_THINKING_MAP,
+        "siliconflow": _SILICONFLOW_THINKING_MAP,
+        "zhipuai": _ZHIPUAI_THINKING_MAP,
+    }
+
+    if provider in _THINKING_MAPS:
+        enable_thinking = _THINKING_MAPS[provider].get(thinking)
         kwargs_ds: dict[str, Any] = dict(
             model=model,
             temperature=temperature,
@@ -100,7 +134,7 @@ def get_llm(model: str | None = None, temperature: float = 0.0) -> Any:
             kwargs_ds["extra_body"] = {"enable_thinking": enable_thinking}
         return ChatOpenAI(**kwargs_ds)  # type: ignore[call-arg]
 
-    # OpenAI provider
+    # OpenAI provider (default)
     reasoning = _OPENAI_REASONING_MAP.get(thinking)
     kwargs: dict[str, Any] = dict(
         model=model,

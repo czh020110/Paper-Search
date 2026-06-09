@@ -1,7 +1,7 @@
 """Embedding client — provider-agnostic wrapper for text vectorization.
 
-Currently supports DashScope (``text-embedding-v4``).  The provider is
-selected via ``EMBEDDING_PROVIDER`` environment variable.
+Supports DashScope and SiliconFlow providers, selected via
+``EMBEDDING_PROVIDER`` environment variable.
 
 Returns ``None`` when the provider is not configured or the call fails,
 so callers can gracefully degrade.
@@ -37,6 +37,8 @@ def get_embedding(text: str) -> list[float] | None:
 
     if provider == "dashscope":
         return _dashscope_embed(text)
+    elif provider == "siliconflow":
+        return _siliconflow_embed(text)
     else:
         logger.warning("Unknown EMBEDDING_PROVIDER: %s", provider)
         return None
@@ -50,6 +52,8 @@ def batch_embeddings(texts: list[str]) -> list[list[float] | None]:
 
     if provider == "dashscope":
         return _dashscope_concurrent_embed(texts)
+    elif provider == "siliconflow":
+        return _siliconflow_concurrent_embed(texts)
     else:
         return [None] * len(texts)
 
@@ -95,6 +99,16 @@ _embedding_limiter = _RateLimiter(EMBEDDING_RPS_LIMIT)
 # ---------------------------------------------------------------------------
 
 
+def _is_multimodal_model(model: str) -> bool:
+    """Return True if *model* is a DashScope multi-modal embedding model.
+
+    Multi-modal models (e.g. ``tongyi-embedding-vision-plus-*``) must be
+    called via ``MultiModalEmbedding.call`` with ``input=[{'text': ...}]``.
+    Plain text models use ``TextEmbedding.call`` with ``input=str``.
+    """
+    return model.startswith("tongyi-")
+
+
 def _dashscope_embed(text: str) -> list[float] | None:
     import dashscope
     from http import HTTPStatus
@@ -106,11 +120,18 @@ def _dashscope_embed(text: str) -> list[float] | None:
         return None
 
     try:
-        resp = dashscope.TextEmbedding.call(
-            model=model,
-            input=text,
-            api_key=api_key,
-        )
+        if _is_multimodal_model(model):
+            resp = dashscope.MultiModalEmbedding.call(
+                model=model,
+                input=[{"text": text}],
+                api_key=api_key,
+            )
+        else:
+            resp = dashscope.TextEmbedding.call(
+                model=model,
+                input=text,
+                api_key=api_key,
+            )
         if resp.status_code == HTTPStatus.OK:
             embeddings = resp.output.get("embeddings", [])
             if embeddings:
@@ -131,6 +152,68 @@ def _dashscope_concurrent_embed(texts: list[str]) -> list[list[float] | None]:
 
     def _embed_one(index: int, text: str) -> tuple[int, list[float] | None]:
         return index, _dashscope_embed(text)
+
+    with ThreadPoolExecutor(max_workers=EMBEDDING_CONCURRENCY) as executor:
+        futures: dict[Any, int] = {}
+        for i, t in enumerate(texts):
+            _embedding_limiter.acquire()
+            futures[executor.submit(_embed_one, i, t)] = i
+        for future in as_completed(futures):
+            try:
+                idx, emb = future.result()
+                results[idx] = emb
+            except Exception:
+                logger.warning("Embedding task failed for index %d", futures[future], exc_info=True)
+
+    ok = sum(1 for r in results if r is not None)
+    if ok < len(texts):
+        logger.info("Embedding: %d/%d succeeded", ok, len(texts))
+    return results
+
+
+# ---------------------------------------------------------------------------
+# SiliconFlow provider  (OpenAI-compatible API)
+# ---------------------------------------------------------------------------
+
+_SILICONFLOW_EMBED_URL = "https://api.siliconflow.cn/v1/embeddings"
+
+
+def _siliconflow_embed(text: str) -> list[float] | None:
+    import httpx
+
+    api_key = os.getenv("EMBEDDING_API_KEY")
+    model = os.getenv("EMBEDDING_MODEL", "BAAI/bge-large-zh-v1.5")
+    if not api_key:
+        logger.warning("EMBEDDING_API_KEY not configured")
+        return None
+
+    try:
+        resp = httpx.post(
+            _SILICONFLOW_EMBED_URL,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={"model": model, "input": text},
+            timeout=30.0,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            items = data.get("data", [])
+            if items:
+                return list(items[0].get("embedding", []))
+        logger.error("SiliconFlow embedding failed: %s %s", resp.status_code, resp.text[:200])
+    except Exception:
+        logger.error("SiliconFlow embedding call failed", exc_info=True)
+    return None
+
+
+def _siliconflow_concurrent_embed(texts: list[str]) -> list[list[float] | None]:
+    """Embed all texts concurrently, rate-limited to *EMBEDDING_RPS_LIMIT*."""
+    results: list[list[float] | None] = [None] * len(texts)
+
+    def _embed_one(index: int, text: str) -> tuple[int, list[float] | None]:
+        return index, _siliconflow_embed(text)
 
     with ThreadPoolExecutor(max_workers=EMBEDDING_CONCURRENCY) as executor:
         futures: dict[Any, int] = {}

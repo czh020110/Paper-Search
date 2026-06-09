@@ -193,7 +193,7 @@ def _config_schema() -> dict[str, dict[str, Any]]:
     """Return the set of writable config keys with their types and defaults."""
     return {
         # Model / Provider
-        "LLM_PROVIDER": {"type": "select", "default": "openai", "options": ["openai", "dashscope"]},
+        "LLM_PROVIDER": {"type": "select", "default": "openai", "options": ["openai", "dashscope", "siliconflow", "zhipuai"]},
         "LLM_MODEL": {"type": "string", "default": "gpt-4o-mini"},
         "LLM_FAST_MODEL": {"type": "string", "default": "gpt-4o-mini"},
         "OPENAI_BASE_URL": {"type": "string", "default": "https://api.openai.com/v1"},
@@ -201,10 +201,10 @@ def _config_schema() -> dict[str, dict[str, Any]]:
         "LLM_THINKING": {"type": "select", "default": "none", "options": ["off", "none", "minimal", "low", "medium", "high", "xhigh"]},
         "SEMANTIC_SCHOLAR_API_KEY": {"type": "string", "default": ""},
         "OPENALEX_MAILTO": {"type": "string", "default": ""},
-        "EMBEDDING_PROVIDER": {"type": "select", "default": "", "options": ["", "dashscope"]},
+        "EMBEDDING_PROVIDER": {"type": "select", "default": "", "options": ["", "dashscope", "siliconflow"]},
         "EMBEDDING_MODEL": {"type": "string", "default": "text-embedding-v4"},
         "EMBEDDING_API_KEY": {"type": "string", "default": ""},
-        "RERANKER_PROVIDER": {"type": "select", "default": "", "options": ["", "dashscope"]},
+        "RERANKER_PROVIDER": {"type": "select", "default": "", "options": ["", "dashscope", "siliconflow"]},
         "RERANKER_MODEL": {"type": "string", "default": "qwen3-rerank"},
         "RERANKER_API_KEY": {"type": "string", "default": ""},
         # Coarse screening
@@ -255,7 +255,7 @@ def _is_config_ready() -> dict[str, Any]:
 
 
 _CONFIG_HELP: dict[str, str] = {
-    "LLM_PROVIDER": "LLM 提供商。OpenAI(兼容) 使用 reasoning_effort 控制思考；DashScope 使用 enable_thinking。示例：openai",
+    "LLM_PROVIDER": "LLM 提供商。openai/dashscope/siliconflow/zhipuai，切换后自动填充 Base URL 和推荐模型。",
     "LLM_MODEL": "LLM 模型名称，用于查询理解和精筛。示例：qwen3.6-plus / gpt-4o-mini",
     "LLM_FAST_MODEL": "轻量 LLM 模型，用于快速任务。不配置则回退到 LLM_MODEL。示例：qwen3.6-flash-nothinking",
     "OPENAI_BASE_URL": "OpenAI 兼容 API 端点 URL。留空默认使用 OpenAI 官方节点 (https://api.openai.com/v1)。示例：https://api.openai.com/v1",
@@ -263,10 +263,10 @@ _CONFIG_HELP: dict[str, str] = {
     "LLM_THINKING": "控制 LLM 思考/推理深度。none=关闭，off=不传参(API默认)，minimal~xhigh=递增推理强度。DashScope 仅支持开/关。",
     "SEMANTIC_SCHOLAR_API_KEY": "S2 API Key（可选）。有 key 可提升速率限制，留空使用公共端点。示例：40字符字符串",
     "OPENALEX_MAILTO": "OpenAlex 礼貌邮箱（可选）。填入邮箱可进入礼貌池获得更稳定服务。示例：your-email@example.com",
-    "EMBEDDING_PROVIDER": "Embedding 服务提供商。目前支持 dashscope。留空则跳过路 B 打分。示例：dashscope",
+    "EMBEDDING_PROVIDER": "Embedding 服务提供商。支持 dashscope、siliconflow。留空则跳过路 B 打分。",
     "EMBEDDING_MODEL": "Embedding 模型名称。示例：text-embedding-v4",
     "EMBEDDING_API_KEY": "Embedding API 密钥。示例：sk-...",
-    "RERANKER_PROVIDER": "Reranker 服务提供商。留空则跳过重排序。示例：dashscope",
+    "RERANKER_PROVIDER": "Reranker 服务提供商。支持 dashscope、siliconflow。留空则跳过重排序。",
     "RERANKER_MODEL": "Reranker 模型名称。示例：qwen3-rerank",
     "RERANKER_API_KEY": "Reranker API 密钥。示例：sk-...",
     "COARSE_POOL_SKIP_THRESHOLD": "候选池 ≤N 篇时跳过粗筛直接透传。示例：40",
@@ -768,6 +768,15 @@ function openConfig() {
     form.addEventListener('input', _markDirty);
     form.dataset.listenerBound = '1';
   }
+  // Track manual edits on LLM model/base_url fields
+  ['cfg-OPENAI_BASE_URL', 'cfg-LLM_MODEL', 'cfg-LLM_FAST_MODEL'].forEach(function(id) {
+    const el = document.getElementById(id);
+    if (el && !el.dataset.editBound) {
+      el.addEventListener('input', _markEdited);
+      el.addEventListener('change', _markEdited);
+      el.dataset.editBound = '1';
+    }
+  });
   // Populate form from configData — values are now objects {value, help, required, ...}
   for (const [k, v] of Object.entries(configData)) {
     if (k === '_validate') continue;
@@ -778,7 +787,7 @@ function openConfig() {
     else el.value = realVal;
   }
   ov.classList.add('show');
-  updateThinkingOptions();
+  onLLMProviderChange();
   _renderHelpIcons();
   updateEmbDependent();
   updateRerankerDependent();
@@ -899,6 +908,7 @@ function testEmbeddingOnly() {
   _callTest('/api/test/embedding', 'btn-test-emb', {
     api_key: _getFormValue('EMBEDDING_API_KEY'),
     model: _getFormValue('EMBEDDING_MODEL'),
+    provider: _getFormValue('EMBEDDING_PROVIDER'),
   });
 }
 
@@ -906,6 +916,7 @@ function testRerankerOnly() {
   _callTest('/api/test/reranker', 'btn-test-reranker', {
     api_key: _getFormValue('RERANKER_API_KEY'),
     model: _getFormValue('RERANKER_MODEL'),
+    provider: _getFormValue('RERANKER_PROVIDER'),
   });
 }
 
@@ -966,25 +977,98 @@ const thinkingOptions = {
     {value: 'off', label: '默认 (不传参数)'},
     {value: 'none', label: '关闭'},
     {value: 'low', label: '开'},
+  ],
+  siliconflow: [
+    {value: 'off', label: '默认 (不传参数)'},
+    {value: 'none', label: '关闭'},
+    {value: 'low', label: '开'},
+  ],
+  zhipuai: [
+    {value: 'off', label: '默认 (不传参数)'},
+    {value: 'none', label: '关闭'},
+    {value: 'low', label: '开'},
   ]
 };
 
-function updateThinkingOptions() {
+// Provider defaults: auto-fill base_url, model, fast_model when switching provider
+const PROVIDER_DEFAULTS = {
+  openai: {
+    base_url: 'https://api.openai.com/v1',
+    model: 'gpt-4o-mini',
+    fast_model: 'gpt-4o-mini',
+  },
+  dashscope: {
+    base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    model: 'qwen3.6-plus',
+    fast_model: 'qwen3.6-flash',
+  },
+  siliconflow: {
+    base_url: 'https://api.siliconflow.cn/v1',
+    model: 'deepseek-ai/DeepSeek-R1-0528-Qwen3-8B',
+    fast_model: 'deepseek-ai/DeepSeek-R1-0528-Qwen3-8B',
+  },
+  zhipuai: {
+    base_url: 'https://open.bigmodel.cn/api/paas/v4',
+    model: 'glm-4.7-flash',
+    fast_model: 'glm-4.7-flash',
+  },
+};
+
+// Free model hints per provider
+const PROVIDER_FREE_HINTS = {
+  siliconflow: '🆓 免费模型: deepseek-ai/DeepSeek-R1-0528-Qwen3-8B, THUDM/GLM-Z1-9B-0414, THUDM/GLM-4-9B-0414',
+  zhipuai: '🆓 免费模型: glm-4.7-flash',
+};
+
+// Track which fields have been manually edited by the user
+const _userEdited = new Set();
+
+function _markEdited(e) {
+  if (e && e.target && e.target.id) _userEdited.add(e.target.id);
+}
+
+function onLLMProviderChange() {
   const providerEl = document.getElementById('cfg-LLM_PROVIDER');
-  const thinkingSel = document.getElementById('cfg-LLM_THINKING');
-  if (!providerEl || !thinkingSel) return;
+  if (!providerEl) return;
   const provider = providerEl.value;
-  const opts = thinkingOptions[provider] || thinkingOptions.openai;
-  const cv = configData['LLM_THINKING'];
-  const curVal = (typeof cv === 'object' && cv !== null) ? (cv.value || 'none') : (cv || 'none');
-  thinkingSel.innerHTML = '';
-  opts.forEach(function(o) {
-    const el = document.createElement('option');
-    el.value = o.value;
-    el.textContent = o.label;
-    if (o.value === curVal) el.selected = true;
-    thinkingSel.appendChild(el);
+  const defaults = PROVIDER_DEFAULTS[provider];
+  if (!defaults) return;
+
+  // Auto-fill fields only if user hasn't manually edited them
+  const pairs = [
+    ['cfg-OPENAI_BASE_URL', defaults.base_url],
+    ['cfg-LLM_MODEL', defaults.model],
+    ['cfg-LLM_FAST_MODEL', defaults.fast_model],
+  ];
+
+  // Show free model hint
+  const hintEl = document.getElementById('llm-free-hint');
+  if (hintEl) {
+    const hint = PROVIDER_FREE_HINTS[provider] || '';
+    hintEl.textContent = hint;
+    hintEl.style.display = hint ? 'block' : 'none';
+  }
+  pairs.forEach(function([id, val]) {
+    if (!_userEdited.has(id)) {
+      const el = document.getElementById(id);
+      if (el) el.value = val;
+    }
   });
+
+  // Update thinking options
+  const thinkingSel = document.getElementById('cfg-LLM_THINKING');
+  if (thinkingSel) {
+    const opts = thinkingOptions[provider] || thinkingOptions.openai;
+    const curVal = thinkingSel.value || 'none';
+    thinkingSel.innerHTML = '';
+    opts.forEach(function(o) {
+      const el = document.createElement('option');
+      el.value = o.value;
+      el.textContent = o.label;
+      if (o.value === curVal) el.selected = true;
+      thinkingSel.appendChild(el);
+    });
+  }
 }
 
 // Render ❓ help icons next to each config field's label text
@@ -1039,7 +1123,7 @@ loadConfig();
 
 <h3>模型 & 供应商</h3>
 <div class="row">
-  <div><label>LLM Provider</label><select id="cfg-LLM_PROVIDER" onchange="updateThinkingOptions()"><option value="openai">OpenAI (兼容)</option><option value="dashscope">DashScope</option></select></div>
+  <div><label>LLM Provider</label><select id="cfg-LLM_PROVIDER" onchange="onLLMProviderChange()"><option value="openai">OpenAI (兼容)</option><option value="dashscope">DashScope</option><option value="siliconflow">SiliconFlow</option><option value="zhipuai">ZhipuAI</option></select></div>
   <div><label>思考程度</label><select id="cfg-LLM_THINKING"></select></div>
 </div>
 <div class="row">
@@ -1048,6 +1132,7 @@ loadConfig();
 </div>
 <div class="row">
   <div><label>OpenAI Base URL</label><input id="cfg-OPENAI_BASE_URL" placeholder="https://api.openai.com/v1"></div>
+  <div id="llm-free-hint" style="display:none;grid-column:1/-1;font-size:11px;color:#888;margin:-4px 0 4px;padding-left:2px"></div>
   <div><label>LLM API Key</label><input id="cfg-LLM_API_KEY" type="password" placeholder="sk-..."></div>
 </div>
 <div style="margin:-8px 0 12px;text-align:right"><button id="btn-test-llm" type="button" class="test-btn test-btn-idle" onclick="testLLM()">🔗 测试连接</button></div>
@@ -1064,12 +1149,12 @@ loadConfig();
 
 <h3>Embedding / Reranker</h3>
 <div class="row">
-  <div class="emb-dependent"><label>Embedding Provider</label><select id="cfg-EMBEDDING_PROVIDER"><option value="">(无)</option><option value="dashscope">DashScope</option></select></div>
+  <div class="emb-dependent"><label>Embedding Provider</label><select id="cfg-EMBEDDING_PROVIDER"><option value="">(无)</option><option value="dashscope">DashScope</option><option value="siliconflow">SiliconFlow</option></select></div>
   <div class="emb-dependent"><label>Embedding Model</label><input id="cfg-EMBEDDING_MODEL" placeholder="text-embedding-v4"></div>
 </div>
 <div class="row">
   <div class="emb-dependent"><label>Embedding API Key</label><input id="cfg-EMBEDDING_API_KEY" type="password" placeholder="sk-..."></div>
-  <div class="reranker-dependent"><label>Reranker Provider</label><select id="cfg-RERANKER_PROVIDER"><option value="">(无)</option><option value="dashscope">DashScope</option></select></div>
+  <div class="reranker-dependent"><label>Reranker Provider</label><select id="cfg-RERANKER_PROVIDER"><option value="">(无)</option><option value="dashscope">DashScope</option><option value="siliconflow">SiliconFlow</option></select></div>
 </div>
 <div class="row">
   <div class="reranker-dependent"><label>Reranker Model</label><input id="cfg-RERANKER_MODEL" placeholder="qwen3-rerank"></div>
@@ -1162,10 +1247,11 @@ async def test_llm(body: dict[str, Any] = Body({})) -> dict[str, Any]:
         provider = body.get("provider") or os.getenv("LLM_PROVIDER", "openai")
         api_key = body.get("api_key") or os.getenv("LLM_API_KEY", "")
         model = body.get("model") or os.getenv("LLM_MODEL") or os.getenv("LLM_FAST_MODEL") or "gpt-4o-mini"
-        base_url = body.get("base_url") or os.getenv("OPENAI_BASE_URL") or (
-            "https://dashscope.aliyuncs.com/compatible-mode/v1" if provider == "dashscope"
-            else "https://api.openai.com/v1"
-        )
+        base_url = body.get("base_url") or os.getenv("OPENAI_BASE_URL") or {
+            "dashscope": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "siliconflow": "https://api.siliconflow.cn/v1",
+            "zhipuai": "https://open.bigmodel.cn/api/paas/v4",
+        }.get(provider, "https://api.openai.com/v1")
 
         llm = ChatOpenAI(model=model, temperature=0.0, api_key=api_key, base_url=base_url)
         resp = llm.invoke([HumanMessage(content="Respond with only: OK")])
@@ -1179,19 +1265,51 @@ async def test_llm(body: dict[str, Any] = Body({})) -> dict[str, Any]:
 async def test_embedding(body: dict[str, Any] = Body({})) -> dict[str, Any]:
     """Test embedding API using provided (or env) config."""
     try:
+        api_key = body.get("api_key") or os.getenv("EMBEDDING_API_KEY", "")
+        model = body.get("model") or os.getenv("EMBEDDING_MODEL", "") or "text-embedding-v4"
+        provider = body.get("provider") or os.getenv("EMBEDDING_PROVIDER", "")
+        if not api_key:
+            return {"ok": False, "message": "未配置 Embedding API Key"}
+        # 占位符检测
+        if api_key.startswith("your-") or "api-key" in api_key.lower():
+            return {"ok": False, "message": "Embedding API Key 未配置（当前为占位符）"}
+        if model.startswith("your-"):
+            return {"ok": False, "message": f"Embedding 模型名无效: \"{model}\"，请填写如 text-embedding-v3"}
+
+        # SiliconFlow: OpenAI-compatible API
+        if provider == "siliconflow":
+            import httpx
+            resp = httpx.post(
+                "https://api.siliconflow.cn/v1/embeddings",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={"model": model, "input": "test query"},
+                timeout=30.0,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                items = data.get("data", [])
+                dim = len(items[0]["embedding"]) if items else 0
+                return {"ok": True, "message": f"Embedding 正常 (SiliconFlow)，向量维度: {dim}"}
+            err = resp.text[:200]
+            return {"ok": False, "message": f"SiliconFlow Embedding 返回错误 ({resp.status_code}): {err}"}
+
+        # DashScope: native SDK
         import dashscope
         from http import HTTPStatus
 
-        api_key = body.get("api_key") or os.getenv("EMBEDDING_API_KEY", "")
-        model = body.get("model") or os.getenv("EMBEDDING_MODEL", "text-embedding-v4")
-        if not api_key:
-            return {"ok": False, "message": "未配置 Embedding API Key"}
-
-        resp = dashscope.TextEmbedding.call(model=model, input="test query", api_key=api_key)
+        # 多模态模型走 MultiModalEmbedding，纯文本走 TextEmbedding
+        if model.startswith("tongyi-"):
+            resp = dashscope.MultiModalEmbedding.call(
+                model=model, input=[{"text": "test query"}], api_key=api_key,
+            )
+        else:
+            resp = dashscope.TextEmbedding.call(model=model, input="test query", api_key=api_key)
         if resp.status_code == HTTPStatus.OK:
             dim = len(resp.output["embeddings"][0]["embedding"])
-            return {"ok": True, "message": f"Embedding 正常，向量维度: {dim}"}
-        return {"ok": False, "message": f"Embedding 返回错误: {resp.status_code}"}
+            return {"ok": True, "message": f"Embedding 正常 (DashScope)，向量维度: {dim}"}
+        detail = getattr(resp, "message", "") or ""
+        code = getattr(resp, "code", "") or ""
+        return {"ok": False, "message": f"Embedding 返回错误 ({resp.status_code}): {code} {detail}".strip()}
     except Exception as e:
         return {"ok": False, "message": f"Embedding 测试失败: {str(e)[:200]}"}
 
@@ -1200,20 +1318,40 @@ async def test_embedding(body: dict[str, Any] = Body({})) -> dict[str, Any]:
 async def test_reranker(body: dict[str, Any] = Body({})) -> dict[str, Any]:
     """Test reranker API using provided (or env) config."""
     try:
-        import dashscope
-        from http import HTTPStatus
-
         api_key = body.get("api_key") or os.getenv("RERANKER_API_KEY", "")
-        model = body.get("model") or os.getenv("RERANKER_MODEL", "qwen3-rerank")
+        model = body.get("model") or os.getenv("RERANKER_MODEL", "") or "qwen3-rerank"
+        provider = body.get("provider") or os.getenv("RERANKER_PROVIDER", "")
         if not api_key:
             return {"ok": False, "message": "未配置 Reranker API Key"}
+        if api_key.startswith("your-") or "api-key" in api_key.lower():
+            return {"ok": False, "message": "Reranker API Key 未配置（当前为占位符）"}
+        if model.startswith("your-"):
+            return {"ok": False, "message": f"Reranker 模型名无效: \"{model}\"，请填写如 qwen3-rerank"}
+
+        # SiliconFlow: OpenAI-compatible API
+        if provider == "siliconflow":
+            import httpx
+            resp = httpx.post(
+                "https://api.siliconflow.cn/v1/rerank",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={"model": model, "query": "test", "documents": ["test document"], "top_n": 1, "return_documents": False},
+                timeout=30.0,
+            )
+            if resp.status_code == 200:
+                return {"ok": True, "message": "Reranker API 正常 (SiliconFlow)"}
+            err = resp.text[:200]
+            return {"ok": False, "message": f"SiliconFlow Reranker 返回错误 ({resp.status_code}): {err}"}
+
+        # DashScope: native SDK
+        import dashscope
+        from http import HTTPStatus
 
         resp = dashscope.TextReRank.call(
             model=model, query="test", documents=["test document"],
             top_n=1, return_documents=False, api_key=api_key,
         )
         if resp.status_code == HTTPStatus.OK:
-            return {"ok": True, "message": "Reranker API 正常"}
+            return {"ok": True, "message": "Reranker API 正常 (DashScope)"}
         return {"ok": False, "message": f"Reranker 返回错误: {resp.status_code} - {resp.message}"}
     except Exception as e:
         return {"ok": False, "message": f"Reranker 测试失败: {str(e)[:200]}"}

@@ -1,7 +1,9 @@
-"""Medium screening: DashScope qwen3-rerank for high-precision re-ranking.
+"""Medium screening: reranker for high-precision re-ranking.
+
+Supports DashScope (qwen3-rerank) and SiliconFlow (BAAI/bge-reranker-v2-m3).
 
 Per design 4.6: takes coarse-scored candidates, sends (query, document) pairs
-to DashScope's qwen3-rerank API, then keeps papers above the relative threshold
+to the configured reranker API, then keeps papers above the relative threshold
 with a Top-K fallback.
 
 Falls back gracefully when the reranker provider is not configured.
@@ -90,7 +92,8 @@ def rerank(pool: CandidatePool, query_plan: QueryPlan) -> list[Paper]:
 
 
 def _call_rerank_api(query: str, documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Call DashScope qwen3-rerank via the official SDK. Falls back gracefully on failure."""
+    """Call reranker API. Dispatches to the configured provider. Falls back gracefully on failure."""
+    provider = os.getenv("RERANKER_PROVIDER", "")
     api_key = os.getenv("RERANKER_API_KEY")
     model = os.getenv("RERANKER_MODEL", "qwen3-rerank")
 
@@ -98,6 +101,15 @@ def _call_rerank_api(query: str, documents: list[dict[str, Any]]) -> list[dict[s
         logger.warning("RERANKER_API_KEY not configured, falling back")
         return [{"id": d["id"], "score": 0.0} for d in documents]
 
+    if provider == "siliconflow":
+        return _call_rerank_siliconflow(query, documents, api_key, model)
+    return _call_rerank_dashscope(query, documents, api_key, model)
+
+
+def _call_rerank_dashscope(
+    query: str, documents: list[dict[str, Any]], api_key: str, model: str,
+) -> list[dict[str, Any]]:
+    """Call DashScope qwen3-rerank via the official SDK."""
     import dashscope
     from http import HTTPStatus
 
@@ -116,10 +128,45 @@ def _call_rerank_api(query: str, documents: list[dict[str, Any]]) -> list[dict[s
         )
 
         if resp.status_code == HTTPStatus.OK:
+            return _parse_rerank_results(resp.output, documents)
+        else:
+            logger.error("DashScope reranker returned %s: %s", resp.status_code, resp.message)
+    except Exception:
+        logger.error("DashScope reranker call failed", exc_info=True)
+
+    return [{"id": d["id"], "score": 0.0} for d in documents]
+
+
+_SILICONFLOW_RERANK_URL = "https://api.siliconflow.cn/v1/rerank"
+
+
+def _call_rerank_siliconflow(
+    query: str, documents: list[dict[str, Any]], api_key: str, model: str,
+) -> list[dict[str, Any]]:
+    """Call SiliconFlow rerank API (OpenAI-compatible)."""
+    import httpx
+
+    try:
+        resp = httpx.post(
+            _SILICONFLOW_RERANK_URL,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "query": query,
+                "documents": [d["text"] for d in documents],
+                "top_n": min(len(documents), 100),
+                "return_documents": True,
+            },
+            timeout=30.0,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            raw_results = data.get("results", [])
             results: list[dict[str, Any]] = []
             seen: set[str] = set()
-            out: dict[str, Any] = resp.output if resp.output is not None else {}
-            raw_results: list[dict[str, Any]] = out.get("results", [])  # type: ignore[assignment]
             for item in raw_results:
                 idx = item.get("index", -1)
                 score = item.get("relevance_score", 0.0)
@@ -127,17 +174,36 @@ def _call_rerank_api(query: str, documents: list[dict[str, Any]]) -> list[dict[s
                     did = documents[idx]["id"]
                     results.append({"id": did, "score": float(score)})
                     seen.add(did)
-
             for d in documents:
                 if d["id"] not in seen:
                     results.append({"id": d["id"], "score": 0.0})
             return results
         else:
-            logger.error("Reranker API returned %s: %s", resp.status_code, resp.message)
+            logger.error("SiliconFlow reranker returned %s: %s", resp.status_code, resp.text[:200])
     except Exception:
-        logger.error("Reranker API call failed", exc_info=True)
+        logger.error("SiliconFlow reranker call failed", exc_info=True)
 
     return [{"id": d["id"], "score": 0.0} for d in documents]
+
+
+def _parse_rerank_results(output: Any, documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Parse DashScope reranker output into a standard result list."""
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    out: dict[str, Any] = output if output is not None else {}
+    raw_results: list[dict[str, Any]] = out.get("results", [])  # type: ignore[assignment]
+    for item in raw_results:
+        idx = item.get("index", -1)
+        score = item.get("relevance_score", 0.0)
+        if 0 <= idx < len(documents):
+            did = documents[idx]["id"]
+            results.append({"id": did, "score": float(score)})
+            seen.add(did)
+
+    for d in documents:
+        if d["id"] not in seen:
+            results.append({"id": d["id"], "score": 0.0})
+    return results
 
 
 def _fallback_pass_through(pool: CandidatePool, papers: list[Paper]) -> None:
