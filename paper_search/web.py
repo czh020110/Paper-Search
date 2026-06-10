@@ -1268,6 +1268,13 @@ loadConfig();
   <div class="reranker-dependent"><label>Reranker API Key</label><span class="pwd-wrap"><input id="cfg-RERANKER_API_KEY" type="password" placeholder="sk-..."><button type="button" class="pwd-toggle" onclick="toggleApiKey(this)" tabindex="-1"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 11 11 0 0 1 19.876 0 1 1 0 0 1 0 .696 11 11 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg></button></span></div>
   <div style="display:flex;align-items:center;min-height:100%"><label style="margin-bottom:0"><input id="cfg-RERANKER_ENABLED" type="checkbox" onchange="onRerankerToggle()"> 启用 Reranker</label></div>
 </div>
+<div class="row">
+  <div class="reranker-dependent"><label>Top-K 保底</label><input id="cfg-RERANKER_TOP_K_FALLBACK" type="number" step="1"></div>
+  <div class="reranker-dependent"><label>相对阈值因子</label><input id="cfg-RERANKER_RELATIVE_THRESHOLD_FACTOR" type="number" step="0.01"></div>
+</div>
+<div class="row">
+  <div class="reranker-dependent"><label>查询模式</label><select id="cfg-RERANKER_QUERY_MODE"><option value="combined">合并子查询 (默认)</option><option value="max_per_query">逐条子查询取最高分</option></select></div>
+</div>
 
 <h3>粗筛 (Coarse)</h3>
 <div class="row">
@@ -1285,15 +1292,6 @@ loadConfig();
 </div>
 <div class="row">
   <div><label>截断相对阈值因子</label><input id="cfg-COARSE_RELATIVE_THRESHOLD_FACTOR" type="number" step="0.01"></div>
-</div>
-
-<h3>重排序 (Reranker)</h3>
-<div class="row">
-  <div><label>Top-K 保底</label><input id="cfg-RERANKER_TOP_K_FALLBACK" type="number" step="1"></div>
-  <div><label>相对阈值因子</label><input id="cfg-RERANKER_RELATIVE_THRESHOLD_FACTOR" type="number" step="0.01"></div>
-</div>
-<div class="row">
-  <div class="reranker-dependent"><label>查询模式</label><select id="cfg-RERANKER_QUERY_MODE"><option value="combined">合并子查询 (默认)</option><option value="max_per_query">逐条子查询取最高分</option></select></div>
 </div>
 
 <h3>精筛 (Judge)</h3>
