@@ -64,9 +64,11 @@ redis-data/
 outputs/
 
 # Environment files
-.env
-.env.*
-!.env.example
+# .env = 公共默认配置（提交 Git，不含敏感信息）
+# .env.local = 本地私密配置（不提交 Git，含 API Key 等敏感信息）
+# .env.example = 模板清单（提交 Git，含所有可配置项及注释）
+.env.local
+.env.*.local
 config.local.yaml
 config.local.yml
 

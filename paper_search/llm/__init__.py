@@ -59,12 +59,19 @@ def _resolve_provider() -> str:
 
 def _resolve_api_key(provider: str) -> str | None:
     if provider == "dashscope":
-        return os.getenv("LLM_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
+        return os.getenv("DASHSCOPE_API_KEY")
     if provider == "siliconflow":
-        return os.getenv("LLM_API_KEY") or os.getenv("SILICONFLOW_API_KEY")
+        return os.getenv("SILICONFLOW_API_KEY")
     if provider == "zhipuai":
-        return os.getenv("LLM_API_KEY") or os.getenv("ZHIPUAI_API_KEY")
-    return os.getenv("LLM_API_KEY")
+        return os.getenv("ZHIPUAI_API_KEY")
+    # openai (default)
+    return os.getenv("OPENAI_API_KEY")
+
+
+def is_llm_key_configured() -> bool:
+    """Check whether the API key for the current LLM_PROVIDER is set."""
+    provider = _resolve_provider()
+    return bool(_resolve_api_key(provider))
 
 
 def _resolve_base_url(provider: str) -> str:

@@ -31,7 +31,7 @@ OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
 
 def _api_key_status() -> dict[str, Any]:
     return {
-        "llm": bool(os.getenv("LLM_API_KEY")),
+        "llm": bool(os.getenv("OPENAI_API_KEY") or os.getenv("DASHSCOPE_API_KEY") or os.getenv("SILICONFLOW_API_KEY") or os.getenv("ZHIPUAI_API_KEY")),
         "semantic_scholar": bool(os.getenv("SEMANTIC_SCHOLAR_API_KEY")),
         "openalex_mailto": bool(os.getenv("OPENALEX_MAILTO")),
         "embedding": bool(os.getenv("EMBEDDING_API_KEY")),
@@ -203,7 +203,10 @@ def _config_schema() -> dict[str, dict[str, Any]]:
         "LLM_MODEL": {"type": "string", "default": "gpt-4o-mini"},
         "LLM_FAST_MODEL": {"type": "string", "default": "gpt-4o-mini"},
         "OPENAI_BASE_URL": {"type": "string", "default": "https://api.openai.com/v1"},
-        "LLM_API_KEY": {"type": "string", "default": ""},
+        "OPENAI_API_KEY": {"type": "string", "default": ""},
+        "DASHSCOPE_API_KEY": {"type": "string", "default": ""},
+        "SILICONFLOW_API_KEY": {"type": "string", "default": ""},
+        "ZHIPUAI_API_KEY": {"type": "string", "default": ""},
         "LLM_THINKING": {"type": "select", "default": "none", "options": ["off", "none", "minimal", "low", "medium", "high", "xhigh"]},
         "SEMANTIC_SCHOLAR_API_KEY": {"type": "string", "default": ""},
         "OPENALEX_MAILTO": {"type": "string", "default": ""},
@@ -242,7 +245,7 @@ def _config_schema() -> dict[str, dict[str, Any]]:
 
 
 _REQUIRED_CONFIG_KEYS = [
-    "LLM_MODEL", "LLM_FAST_MODEL", "LLM_API_KEY",
+    "LLM_MODEL", "LLM_FAST_MODEL", "OPENAI_API_KEY",
     "EMBEDDING_API_KEY", "EMBEDDING_MODEL",
     "RERANKER_API_KEY", "RERANKER_MODEL",
 ]
@@ -255,6 +258,20 @@ def _is_config_ready() -> dict[str, Any]:
         val = os.getenv(key, "").strip()
         if not val:
             missing.append(key)
+    # LLM key: check the key for the current provider, not just OPENAI_API_KEY
+    provider = os.getenv("LLM_PROVIDER", "openai").lower()
+    _PROVIDER_KEY_MAP = {
+        "openai": "OPENAI_API_KEY",
+        "dashscope": "DASHSCOPE_API_KEY",
+        "siliconflow": "SILICONFLOW_API_KEY",
+        "zhipuai": "ZHIPUAI_API_KEY",
+    }
+    required_llm_key = _PROVIDER_KEY_MAP.get(provider, "OPENAI_API_KEY")
+    llm_key_missing = not os.getenv(required_llm_key, "").strip()
+    # Remove all provider keys from missing, then add back only the current one if needed
+    missing = [m for m in missing if m in ("OPENAI_API_KEY", "DASHSCOPE_API_KEY", "SILICONFLOW_API_KEY", "ZHIPUAI_API_KEY") and m != required_llm_key]
+    if llm_key_missing and required_llm_key not in missing:
+        missing.append(required_llm_key)
     embedding_enabled = os.getenv("EMBEDDING_ENABLED", "true").lower() not in ("0", "false", "no")
     if not embedding_enabled:
         missing = [m for m in missing if not m.startswith("EMBEDDING_")]
@@ -270,7 +287,10 @@ _CONFIG_HELP: dict[str, str] = {
     "LLM_MODEL": "LLM 模型名称，用于查询理解和精筛。示例：qwen3.6-plus / gpt-4o-mini",
     "LLM_FAST_MODEL": "轻量 LLM 模型，用于快速任务。不配置则回退到 LLM_MODEL。示例：qwen3.6-flash-nothinking",
     "OPENAI_BASE_URL": "OpenAI 兼容 API 端点 URL，按当前选择的 LLM_PROVIDER 自动切换默认值。也可手动自定义。示例：https://api.openai.com/v1",
-    "LLM_API_KEY": "LLM API 认证密钥。示例：sk-...",
+    "OPENAI_API_KEY": "OpenAI API 认证密钥。LLM_PROVIDER=openai 时使用。示例：sk-...",
+    "DASHSCOPE_API_KEY": "DashScope API 认证密钥。LLM_PROVIDER=dashscope 时使用。",
+    "SILICONFLOW_API_KEY": "SiliconFlow API 认证密钥。LLM_PROVIDER=siliconflow 时使用。",
+    "ZHIPUAI_API_KEY": "ZhipuAI API 认证密钥。LLM_PROVIDER=zhipuai 时使用。",
     "LLM_THINKING": "控制 LLM 思考/推理深度。none=关闭，off=不传参(API默认)，minimal~xhigh=递增推理强度。DashScope 仅支持开/关。",
     "SEMANTIC_SCHOLAR_API_KEY": "S2 API Key（可选）。有 key 可提升速率限制，留空使用公共端点。示例：40字符字符串",
     "OPENALEX_MAILTO": "OpenAlex 礼貌邮箱（可选）。填入邮箱可进入礼貌池获得更稳定服务。示例：your-email@example.com",
@@ -328,23 +348,18 @@ def _collect_config() -> dict[str, Any]:
 
 
 def _write_env(updates: dict[str, str]) -> None:
-    """Write config updates to .env.local, creating from .env template if needed.
+    """Write config updates to .env.local.
 
     Keys that already exist are updated in-place; new keys are appended.
     Comment lines and blank lines are preserved.
     """
     local = Path.cwd() / ".env.local"
-    env = Path.cwd() / ".env"
 
-    # Auto-create .env.local from .env template if it doesn't exist
-    if not local.is_file() and env.is_file():
-        local.write_text(env.read_text(encoding="utf-8"), encoding="utf-8")
-
-    env_file = local if local.is_file() else env
+    # Read existing .env.local or start with empty
     lines: list[str] = []
     seen: set[str] = set()
-    if env_file.is_file():
-        for line in env_file.read_text(encoding="utf-8").splitlines(keepends=True):
+    if local.is_file():
+        for line in local.read_text(encoding="utf-8").splitlines(keepends=True):
             stripped = line.strip()
             if stripped and not stripped.startswith("#"):
                 if "=" in stripped:
@@ -354,11 +369,13 @@ def _write_env(updates: dict[str, str]) -> None:
                         seen.add(key)
                         continue
             lines.append(line if line.endswith("\n") else line + "\n")
+
     # Append keys not yet seen
     for key, value in updates.items():
         if key not in seen:
             lines.append(f"{key}={value}\n")
-    env_file.write_text("".join(lines), encoding="utf-8")
+
+    local.write_text("".join(lines), encoding="utf-8")
 
 
 # ============================ Web Page ============================ #
@@ -533,7 +550,7 @@ Embedding 并发: <b>EMBEDDING_CONCURRENCY</b>=10 workers, RPS 限速: <b>EMBEDD
 <b>JUDGE_CONCURRENCY</b>=100 并发逐篇调用 <b>LLM_FAST_MODEL</b> 三分类判定。<br>
 每篇 1 次 LLM 调用 → 高度相关/部分相关/不相关 + 理由 + 贡献。<br>
 单波上限 <b>JUDGE_WAVE_CAP</b>=5000 篇。<br>
-无 <b>LLM_API_KEY</b> 时报错，不静默回退。</span></span></p>
+无对应 Provider API Key 时报错，不静默回退。</span></span></p>
 
 <div id="key-status" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px"></div>
 
@@ -948,10 +965,16 @@ async function _callTest(endpoint, btnId, body) {
   }
 }
 
+function _getLLMApiKey() {
+  var provider = _getFormValue('LLM_PROVIDER') || 'openai';
+  var keyMap = {openai: 'OPENAI_API_KEY', dashscope: 'DASHSCOPE_API_KEY', siliconflow: 'SILICONFLOW_API_KEY', zhipuai: 'ZHIPUAI_API_KEY'};
+  return _getFormValue(keyMap[provider] || 'OPENAI_API_KEY');
+}
+
 function testLLMModel() {
   _callTest('/api/test/llm', 'btn-test-llm-model', {
     provider: _getFormValue('LLM_PROVIDER'),
-    api_key: _getFormValue('LLM_API_KEY'),
+    api_key: _getLLMApiKey(),
     model: _getFormValue('LLM_MODEL'),
     base_url: _getFormValue('OPENAI_BASE_URL'),
   });
@@ -960,7 +983,7 @@ function testLLMModel() {
 function testLLMFastModel() {
   _callTest('/api/test/llm', 'btn-test-llm-fast', {
     provider: _getFormValue('LLM_PROVIDER'),
-    api_key: _getFormValue('LLM_API_KEY'),
+    api_key: _getLLMApiKey(),
     model: _getFormValue('LLM_FAST_MODEL'),
     base_url: _getFormValue('OPENAI_BASE_URL'),
   });
@@ -1168,6 +1191,17 @@ function onLLMProviderChange() {
       thinkingSel.appendChild(el);
     });
   }
+
+  // Show only the API key input for the current provider
+  var keyIds = ['llm-key-openai', 'llm-key-dashscope', 'llm-key-siliconflow', 'llm-key-zhipuai'];
+  var keyMap = {openai: 'llm-key-openai', dashscope: 'llm-key-dashscope', siliconflow: 'llm-key-siliconflow', zhipuai: 'llm-key-zhipuai'};
+  keyIds.forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
+  var activeKey = keyMap[provider] || 'llm-key-openai';
+  var activeEl = document.getElementById(activeKey);
+  if (activeEl) activeEl.style.display = '';
 }
 
 // Render ❓ help icons next to each config field's label text
@@ -1237,7 +1271,10 @@ loadConfig();
   <div id="llm-free-hint" style="display:none;font-size:11px;color:#888;margin:-8px 0 8px;padding-left:2px"></div>
 <div class="row">
   <div><label id="cfg-label-OPENAI_BASE_URL">OpenAI Base URL</label><input id="cfg-OPENAI_BASE_URL" placeholder="https://api.openai.com/v1"></div>
-  <div><label>LLM API Key</label><span class="pwd-wrap"><input id="cfg-LLM_API_KEY" type="password" placeholder="sk-..."><button type="button" class="pwd-toggle" onclick="toggleApiKey(this)" tabindex="-1"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 11 11 0 0 1 19.876 0 1 1 0 0 1 0 .696 11 11 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg></button></span></div>
+  <div id="llm-key-openai"><label>OpenAI API Key</label><span class="pwd-wrap"><input id="cfg-OPENAI_API_KEY" type="password" placeholder="sk-..."><button type="button" class="pwd-toggle" onclick="toggleApiKey(this)" tabindex="-1"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 11 11 0 0 1 19.876 0 1 1 0 0 1 0 .696 11 11 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg></button></span></div>
+  <div id="llm-key-dashscope" style="display:none"><label>DashScope API Key</label><span class="pwd-wrap"><input id="cfg-DASHSCOPE_API_KEY" type="password" placeholder="sk-..."><button type="button" class="pwd-toggle" onclick="toggleApiKey(this)" tabindex="-1"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 11 11 0 0 1 19.876 0 1 1 0 0 1 0 .696 11 11 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg></button></span></div>
+  <div id="llm-key-siliconflow" style="display:none"><label>SiliconFlow API Key</label><span class="pwd-wrap"><input id="cfg-SILICONFLOW_API_KEY" type="password" placeholder="sk-..."><button type="button" class="pwd-toggle" onclick="toggleApiKey(this)" tabindex="-1"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 11 11 0 0 1 19.876 0 1 1 0 0 1 0 .696 11 11 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg></button></span></div>
+  <div id="llm-key-zhipuai" style="display:none"><label>ZhipuAI API Key</label><span class="pwd-wrap"><input id="cfg-ZHIPUAI_API_KEY" type="password" placeholder="..."><button type="button" class="pwd-toggle" onclick="toggleApiKey(this)" tabindex="-1"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 11 11 0 0 1 19.876 0 1 1 0 0 1 0 .696 11 11 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg></button></span></div>
 </div>
 
 <h3>学术搜索 API</h3>
@@ -1357,7 +1394,14 @@ async def test_llm(body: dict[str, Any] = Body({})) -> dict[str, Any]:
         from langchain_core.messages import HumanMessage
 
         provider = body.get("provider") or os.getenv("LLM_PROVIDER", "openai")
-        api_key = body.get("api_key") or os.getenv("LLM_API_KEY", "")
+        _PROVIDER_KEY_MAP = {
+            "openai": "OPENAI_API_KEY",
+            "dashscope": "DASHSCOPE_API_KEY",
+            "siliconflow": "SILICONFLOW_API_KEY",
+            "zhipuai": "ZHIPUAI_API_KEY",
+        }
+        key_env = _PROVIDER_KEY_MAP.get(provider, "OPENAI_API_KEY")
+        api_key = body.get("api_key") or os.getenv(key_env, "")
         model = body.get("model") or os.getenv("LLM_MODEL") or os.getenv("LLM_FAST_MODEL") or "gpt-4o-mini"
         from paper_search.llm import _resolve_base_url
         base_url = body.get("base_url") or _resolve_base_url(provider)

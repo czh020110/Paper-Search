@@ -37,8 +37,9 @@ def judge(pool: CandidatePool, query_plan: QueryPlan) -> list[Paper]:
         logger.info("No reranked papers to judge")
         return papers
 
-    if not os.getenv("LLM_API_KEY"):
-        logger.info("No LLM API key configured, passing all %d papers as highly relevant", len(papers))
+    from ..llm import is_llm_key_configured
+    if not is_llm_key_configured():
+        logger.info("No LLM API key configured for current provider, passing all %d papers as highly relevant", len(papers))
         pool.transition_all("reranked", "llm_judged", reason="judge_pass_through")
         pool.transition_all("llm_judged", "selected", reason="no_llm_default_include")
         return pool.by_status("selected")

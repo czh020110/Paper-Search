@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from .contracts import IntentAnalysis, QueryPlan
+
+if TYPE_CHECKING:
+    from .schemas import QueryPlanSchema
 
 logger = logging.getLogger(__name__)
 
@@ -15,17 +18,18 @@ def build_query_plan(query: str, use_llm: bool = False) -> QueryPlan:
     """Convert a natural language query into a structured QueryPlan.
 
     When *use_llm* is True, delegates to an LLM via LangChain.  Raises
-    ``RuntimeError`` if ``LLM_API_KEY`` is not configured so the caller
-    never silently falls back to a lower-quality path.
+    ``RuntimeError`` if the LLM API key for the current provider is not
+    configured so the caller never silently falls back to a lower-quality path.
 
     When *use_llm* is False, uses the rule-based path (for tests/mock).
     """
     if use_llm:
-        import os
-        if not os.getenv("LLM_API_KEY"):
+        from .llm import is_llm_key_configured, _resolve_provider
+        if not is_llm_key_configured():
+            provider = _resolve_provider()
             raise RuntimeError(
-                "LLM query understanding requested but LLM_API_KEY is not set. "
-                "Set LLM_API_KEY in .env or run with --backend mock for offline testing."
+                f"LLM query understanding requested but API key for provider '{provider}' is not set. "
+                "Set the corresponding key in .env.local or run with --backend mock for offline testing."
             )
         return build_query_plan_llm(query)
 
