@@ -455,8 +455,9 @@ _SEARCH_PAGE_HTML = """<!DOCTYPE html>
   .help-icon-missing:hover { background: #f5c6c6; }
   .help-icon-ok { background: #e8f5e9; color: #2e7d32; }
   .help-icon-ok:hover { background: #c8e6c9; }
-  /* Help tooltip — shows below the icon */
+  /* Help tooltip — auto-flip to avoid overflow past modal right edge */
   .help-icon .help-tip { display: none; position: absolute; top: 100%; left: 0; background: #1a1a2e; color: #fff; padding: 6px 10px; border-radius: 6px; font-size: 12px; width: 260px; max-height: 160px; overflow-y: auto; z-index: 500; box-shadow: 0 4px 12px rgba(0,0,0,0.2); line-height: 1.4; font-weight: normal; white-space: normal; text-align: left; margin-top: 4px; }
+  .help-icon-right .help-tip { left: auto; right: 0; }
   .help-icon .help-tip::-webkit-scrollbar { width: 4px; }
   .help-icon .help-tip::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.25); border-radius: 2px; }
   .help-icon:hover .help-tip, .help-tip:hover { display: block; }
@@ -674,6 +675,9 @@ async function doSearch() {
   });
 
   evtSource.addEventListener('result', function(e) {
+    const data = JSON.parse(e.data);
+    papers = data.papers || [];
+    evaluation = data.evaluation || {};
     evtSource.close();
     if (window._evtSource === evtSource) window._evtSource = null;
     btn.dataset.searching = '0';
@@ -727,7 +731,7 @@ async function doSearch() {
     html += '</div>';
     resultDiv.innerHTML = html;
     // Apply timings from SSE result event directly as tooltip on stage labels
-    if (d.timings) { applyTimings(d.timings); }
+    if (data.timings) { applyTimings(data.timings); }
     btn.dataset.searching = '0';
     btn.className = '';
     btn.textContent = '检索';
@@ -1181,14 +1185,18 @@ function _renderHelpIcons() {
     var key = input.id.slice(4);
     var cv = configData[key];
     if (!cv || typeof cv !== 'object') return;
-    var label = input.closest('.row > div') ? input.closest('.row > div').querySelector('label') : null;
+    var parentDiv = input.closest('.row > div');
+    var label = parentDiv ? parentDiv.querySelector('label') : null;
     if (!label) return;
+    // Check if this field is in the right column → flip tooltip leftwards
+    var isRightCol = parentDiv && parentDiv.parentElement && parentDiv === parentDiv.parentElement.children[1];
     // Remove any existing icon for this field
     var existing = label.querySelector('.help-icon');
     if (existing) existing.remove();
     // Create new icon with tooltip
     var icon = document.createElement('span');
     icon.className = 'help-icon';
+    if (isRightCol) icon.classList.add('help-icon-right');
     icon.textContent = '?';
     var tip = document.createElement('span');
     tip.className = 'help-tip';
