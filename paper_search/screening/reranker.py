@@ -48,11 +48,9 @@ def rerank(pool: CandidatePool, query_plan: QueryPlan) -> list[Paper]:
 
     logger.info("Reranking %d papers via %s", len(papers), provider)
 
-    # Build query text with English keywords for better matching
-    query_text = query_plan.original_query
-    core = [c for c in query_plan.semantic_queries.get("core_concepts", []) if c.isascii()]
-    if core:
-        query_text = query_text + " " + " ".join(core[:8])
+    # Build query text based on configured mode
+    reranker_query_mode = os.getenv("RERANKER_QUERY_MODE", "combined")
+    sub_queries = query_plan.sub_queries_for_retrieval
 
     # Prepare documents for reranker
     docs = [
@@ -60,12 +58,26 @@ def rerank(pool: CandidatePool, query_plan: QueryPlan) -> list[Paper]:
         for p in papers
     ]
 
-    results = _call_rerank_api(query_text, docs)
-
-    # Fetch scores from reranker response
-    score_map: dict[str, float] = {}
-    for r in results:
-        score_map[r["id"]] = float(r.get("score", 0.0))
+    if reranker_query_mode == "max_per_query":
+        # Call reranker once per sub_query, each paper takes its max score
+        max_scores: dict[str, float] = {}
+        for sub_q in sub_queries:
+            results = _call_rerank_api(sub_q, docs)
+            for r in results:
+                sid = r["id"]
+                s = float(r.get("score", 0.0))
+                if s > max_scores.get(sid, float("-inf")):
+                    max_scores[sid] = s
+        score_map = max_scores
+        logger.info("Reranker max_per_query: %d sub-queries, %d papers scored",
+                     len(sub_queries), len(score_map))
+    else:
+        # Default "combined": join all sub_queries into one query string
+        query_text = " ".join(sub_queries)
+        results = _call_rerank_api(query_text, docs)
+        score_map = {}
+        for r in results:
+            score_map[r["id"]] = float(r.get("score", 0.0))
 
     # Store scores and determine threshold
     score_list = [score_map.get(p.id, 0.0) for p in papers]

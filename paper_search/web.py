@@ -225,6 +225,7 @@ def _config_schema() -> dict[str, dict[str, Any]]:
         # Reranker
         "RERANKER_TOP_K_FALLBACK": {"type": "int", "default": "30"},
         "RERANKER_RELATIVE_THRESHOLD_FACTOR": {"type": "float", "default": "0.7"},
+        "RERANKER_QUERY_MODE": {"type": "select", "default": "combined", "options": ["combined", "max_per_query"]},
         # Embedding
         "EMBEDDING_CONCURRENCY": {"type": "int", "default": "10"},
         "EMBEDDING_RPS_LIMIT": {"type": "int", "default": "15"},
@@ -285,6 +286,7 @@ _CONFIG_HELP: dict[str, str] = {
     "COARSE_RELATIVE_THRESHOLD_FACTOR": "综合分截断因子。threshold = mean × factor。示例：0.3",
     "RERANKER_TOP_K_FALLBACK": "重排序 Top-K 保底数量。至少保留这么多篇。示例：30",
     "RERANKER_RELATIVE_THRESHOLD_FACTOR": "重排序相对阈值因子。threshold = mean × factor。示例：0.7",
+    "RERANKER_QUERY_MODE": "Reranker 查询模式。combined=将子查询拼成一行（默认，1次调用）; max_per_query=每条子查询分别 rerank 取最高分（更公平，但多次调用）",
     "EMBEDDING_CONCURRENCY": "Embedding 并发 worker 数。过大触发 API 限流。示例：10",
     "EMBEDDING_RPS_LIMIT": "Embedding API 每秒最大请求数。token bucket 限流。示例：15",
     "EMBEDDING_ENABLED": "是否启用 Embedding 稠密检索。关闭后三路退化为 BM25+Structure。",
@@ -1289,6 +1291,9 @@ loadConfig();
 <div class="row">
   <div><label>Top-K 保底</label><input id="cfg-RERANKER_TOP_K_FALLBACK" type="number" step="1"></div>
   <div><label>相对阈值因子</label><input id="cfg-RERANKER_RELATIVE_THRESHOLD_FACTOR" type="number" step="0.01"></div>
+</div>
+<div class="row">
+  <div class="reranker-dependent"><label>查询模式</label><select id="cfg-RERANKER_QUERY_MODE"><option value="combined">合并子查询 (默认)</option><option value="max_per_query">逐条子查询取最高分</option></select></div>
 </div>
 
 <h3>精筛 (Judge)</h3>
