@@ -465,12 +465,23 @@ _SEARCH_PAGE_HTML = """<!DOCTYPE html>
   /* Embedding disabled state */
   .emb-disabled { opacity: 0.4; pointer-events: none; }
   .reranker-disabled { opacity: 0.4; pointer-events: none; }
-	  /* Password toggle button */
-	  .pwd-wrap { position: relative; display: flex; align-items: center; }
-	  .pwd-wrap input { width: 100%; padding-right: 32px; box-sizing: border-box; }
-	  .pwd-toggle { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; padding: 2px; color: #999; display: flex; align-items: center; }
-	  .pwd-toggle:hover { color: #555; background: rgba(0,0,0,0.06); border-radius: 4px; }
-	  .pwd-toggle svg { width: 18px; height: 18px; }
+  /* In-input model test button (radio icon) */
+  .model-test-wrap { position: relative; display: flex; align-items: center; }
+  .model-test-wrap input { width: 100%; padding-right: 32px; box-sizing: border-box; }
+  .model-test-btn { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; padding: 2px; color: #999; display: flex; align-items: center; }
+  .model-test-btn:hover { color: #555; background: rgba(0,0,0,0.06); border-radius: 4px; }
+  .model-test-btn svg { width: 18px; height: 18px; }
+  .model-test-ok { color: #2e7d32 !important; }
+  .model-test-ok:hover { color: #1b5e20 !important; }
+  .model-test-fail { color: #d32f2f !important; }
+  .model-test-fail:hover { color: #b71c1c !important; }
+  .model-test-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  /* Password toggle button */
+  .pwd-wrap { position: relative; display: flex; align-items: center; }
+  .pwd-wrap input { width: 100%; padding-right: 32px; box-sizing: border-box; }
+  .pwd-toggle { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; padding: 2px; color: #999; display: flex; align-items: center; }
+  .pwd-toggle:hover { color: #555; background: rgba(0,0,0,0.06); border-radius: 4px; }
+  .pwd-toggle svg { width: 18px; height: 18px; }
 </style>
 </head>
 <body>
@@ -767,6 +778,7 @@ function _markDirty() { configDirty = true; }
 
 const EYE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 11 11 0 0 1 19.876 0 1 1 0 0 1 0 .696 11 11 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg>';
 const EYE_OFF_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.733 5.076A10.744 10.744 0 0 1 12 5c5 0 9.27 3.11 11 8-1.17 3.31-3.37 5.73-6.12 7.03"/><path d="M14.12 14.121A3 3 0 1 1 9.88 9.88"/><path d="M1 1l22 22"/><path d="M4.22 4.22A11 11 0 0 0 2 12c1.17 3.31 3.37 5.73 6.12 7.03A11.85 11.85 0 0 0 12 20c2.01 0 3.89-.53 5.5-1.47"/></svg>';
+const RADIO_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/></svg>';
 function toggleApiKey(btn) { var inp = btn.parentElement.querySelector("input"); if (inp.type === "password") { inp.type = "text"; btn.innerHTML = EYE_OFF_SVG; } else { inp.type = "password"; btn.innerHTML = EYE_SVG; } }
 
 function openConfig() {
@@ -803,6 +815,7 @@ function openConfig() {
   _userEdited.add('cfg-LLM_MODEL');
   _userEdited.add('cfg-LLM_FAST_MODEL');
   // 注意: cfg-OPENAI_BASE_URL 不加入 _userEdited，切换供应商时始终更新 Base URL
+  _restoreModelTestStates();
   _renderHelpIcons();
   updateEmbDependent();
   updateRerankerDependent();
@@ -871,9 +884,33 @@ function _getFormValue(key) {
   return el.type === 'checkbox' ? (el.checked ? 'true' : 'false') : el.value;
 }
 
+// Cache model test results so the colour persists as a reminder.
+// Cleared when the config panel opens.
+var _modelTestCache = {};
+
+function _setModelTestState(btnId, ok) {
+  var btn = document.getElementById(btnId);
+  if (btn) {
+    btn.className = 'model-test-btn ' + (ok ? 'model-test-ok' : 'model-test-fail');
+    btn.disabled = false;
+  }
+}
+
+function _restoreModelTestStates() {
+  // Restore cached colours for any previously-tested model buttons
+  Object.keys(_modelTestCache).forEach(function(btnId) {
+    var btn = document.getElementById(btnId);
+    if (btn) {
+      btn.className = 'model-test-btn ' + (_modelTestCache[btnId] ? 'model-test-ok' : 'model-test-fail');
+      btn.disabled = false;
+    }
+  });
+}
+
 async function _callTest(endpoint, btnId, body) {
   const btn = document.getElementById(btnId);
-  if (btn) { btn.disabled = true; btn.textContent = '测试中...'; }
+  const isIcon = btn && btn.classList.contains('model-test-btn');
+  if (btn) { btn.disabled = true; if (!isIcon) btn.textContent = '测试中...'; }
   try {
     const opts = { method: 'POST' };
     if (body) { opts.headers = {'Content-Type': 'application/json'}; opts.body = JSON.stringify(body); }
@@ -881,25 +918,42 @@ async function _callTest(endpoint, btnId, body) {
     const d = await r.json();
     showTestToast(d.message, d.ok);
     if (btn) {
-      btn.className = 'test-btn ' + (d.ok ? 'test-btn-ok' : 'test-btn-fail');
-      btn.textContent = d.ok ? '✓ 正常' : '✗ 失败';
-      setTimeout(function() {
-        btn.className = 'test-btn test-btn-idle';
-        btn.textContent = '测试';
-        btn.disabled = false;
-      }, 4000);
+      if (isIcon) {
+        _modelTestCache[btnId] = d.ok;
+        _setModelTestState(btnId, d.ok);
+      } else {
+        btn.className = 'test-btn ' + (d.ok ? 'test-btn-ok' : 'test-btn-fail');
+        btn.textContent = d.ok ? '✓ 正常' : '✗ 失败';
+        setTimeout(function() {
+          btn.className = 'test-btn test-btn-idle';
+          btn.textContent = '测试';
+          btn.disabled = false;
+        }, 4000);
+      }
     }
   } catch (e) {
     showTestToast('请求失败: ' + e.message, false);
-    if (btn) { btn.disabled = false; btn.textContent = '测试'; }
+    if (btn) {
+      if (isIcon) { _modelTestCache[btnId] = false; _setModelTestState(btnId, false); }
+      else { btn.textContent = '测试'; btn.disabled = false; }
+    }
   }
 }
 
-function testLLM() {
-  _callTest('/api/test/llm', 'btn-test-llm', {
+function testLLMModel() {
+  _callTest('/api/test/llm', 'btn-test-llm-model', {
     provider: _getFormValue('LLM_PROVIDER'),
     api_key: _getFormValue('LLM_API_KEY'),
     model: _getFormValue('LLM_MODEL'),
+    base_url: _getFormValue('OPENAI_BASE_URL'),
+  });
+}
+
+function testLLMFastModel() {
+  _callTest('/api/test/llm', 'btn-test-llm-fast', {
+    provider: _getFormValue('LLM_PROVIDER'),
+    api_key: _getFormValue('LLM_API_KEY'),
+    model: _getFormValue('LLM_FAST_MODEL'),
     base_url: _getFormValue('OPENAI_BASE_URL'),
   });
 }
@@ -1164,15 +1218,14 @@ loadConfig();
   <div><label>思考程度</label><select id="cfg-LLM_THINKING"></select></div>
 </div>
 <div class="row">
-  <div><label>LLM Model</label><input id="cfg-LLM_MODEL" placeholder="gpt-4o-mini"></div>
-  <div><label>LLM Fast Model</label><input id="cfg-LLM_FAST_MODEL" placeholder="gpt-4o-mini"></div>
+  <div><label>LLM Model</label><span class="model-test-wrap"><input id="cfg-LLM_MODEL" placeholder="gpt-4o-mini"><button id="btn-test-llm-model" type="button" class="model-test-btn" onclick="testLLMModel()" tabindex="-1" title="测试模型响应"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/></svg></button></span></div>
+  <div><label>LLM Fast Model</label><span class="model-test-wrap"><input id="cfg-LLM_FAST_MODEL" placeholder="gpt-4o-mini"><button id="btn-test-llm-fast" type="button" class="model-test-btn" onclick="testLLMFastModel()" tabindex="-1" title="测试模型响应"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/></svg></button></span></div>
 </div>
   <div id="llm-free-hint" style="display:none;font-size:11px;color:#888;margin:-8px 0 8px;padding-left:2px"></div>
 <div class="row">
   <div><label id="cfg-label-OPENAI_BASE_URL">OpenAI Base URL</label><input id="cfg-OPENAI_BASE_URL" placeholder="https://api.openai.com/v1"></div>
   <div><label>LLM API Key</label><span class="pwd-wrap"><input id="cfg-LLM_API_KEY" type="password" placeholder="sk-..."><button type="button" class="pwd-toggle" onclick="toggleApiKey(this)" tabindex="-1"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 11 11 0 0 1 19.876 0 1 1 0 0 1 0 .696 11 11 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg></button></span></div>
 </div>
-<div style="margin:-8px 0 12px;text-align:right"><button id="btn-test-llm" type="button" class="test-btn test-btn-idle" onclick="testLLM()">🔗 测试连接</button></div>
 
 <h3>学术搜索 API</h3>
 <div class="row">
@@ -1184,24 +1237,28 @@ loadConfig();
   <div><label>DBLP（免费）</label><button id="btn-test-dblp" type="button" class="test-btn test-btn-idle" onclick="testDblp()" style="margin-left:4px">测试 DBLP</button></div>
 </div>
 
-<h3>Embedding / Reranker</h3>
+<h3>Embedding</h3>
 <div class="row">
   <div class="emb-dependent"><label>Embedding Provider</label><select id="cfg-EMBEDDING_PROVIDER"><option value="">(无)</option><option value="dashscope">DashScope</option><option value="siliconflow">SiliconFlow</option></select></div>
-  <div class="emb-dependent"><label>Embedding Model</label><input id="cfg-EMBEDDING_MODEL" placeholder="text-embedding-v4"></div>
+  <div class="emb-dependent"><label>Embedding Model</label><span class="model-test-wrap"><input id="cfg-EMBEDDING_MODEL" placeholder="text-embedding-v4"><button id="btn-test-emb" type="button" class="model-test-btn" onclick="testEmbeddingOnly()" tabindex="-1" title="测试 Embedding"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/></svg></button></span></div>
 </div>
 <div class="row">
   <div class="emb-dependent"><label>Embedding API Key</label><span class="pwd-wrap"><input id="cfg-EMBEDDING_API_KEY" type="password" placeholder="sk-..."><button type="button" class="pwd-toggle" onclick="toggleApiKey(this)" tabindex="-1"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 11 11 0 0 1 19.876 0 1 1 0 0 1 0 .696 11 11 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg></button></span></div>
-  <div class="reranker-dependent"><label>Reranker Provider</label><select id="cfg-RERANKER_PROVIDER"><option value="">(无)</option><option value="dashscope">DashScope</option><option value="siliconflow">SiliconFlow</option></select></div>
-</div>
-<div class="row">
-  <div class="reranker-dependent"><label>Reranker Model</label><input id="cfg-RERANKER_MODEL" placeholder="qwen3-rerank"></div>
-  <div class="reranker-dependent"><label>Reranker API Key</label><span class="pwd-wrap"><input id="cfg-RERANKER_API_KEY" type="password" placeholder="sk-..."><button type="button" class="pwd-toggle" onclick="toggleApiKey(this)" tabindex="-1"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 11 11 0 0 1 19.876 0 1 1 0 0 1 0 .696 11 11 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg></button></span></div>
+  <div style="display:flex;align-items:center;min-height:100%"><label style="margin-bottom:0"><input id="cfg-EMBEDDING_ENABLED" type="checkbox" onchange="onEmbeddingToggle()"> 启用 Embedding</label></div>
 </div>
 <div class="row">
   <div class="emb-dependent"><label>并发数</label><input id="cfg-EMBEDDING_CONCURRENCY" type="number" step="1"></div>
   <div class="emb-dependent"><label>RPS 限速</label><input id="cfg-EMBEDDING_RPS_LIMIT" type="number" step="1"></div>
-  <div><label>启用 Embedding</label><input id="cfg-EMBEDDING_ENABLED" type="checkbox" style="width:auto;margin:6px 0 0" onchange="onEmbeddingToggle()"><button id="btn-test-emb" type="button" class="test-btn test-btn-idle" onclick="testEmbeddingOnly()" style="margin-left:6px">测试 Embedding</button></div>
-  <div><label>启用 Reranker</label><input id="cfg-RERANKER_ENABLED" type="checkbox" style="width:auto;margin:6px 0 0" onchange="onRerankerToggle()"><button id="btn-test-reranker" type="button" class="test-btn test-btn-idle" onclick="testRerankerOnly()" style="margin-left:6px">测试 Reranker</button></div>
+</div>
+
+<h3>Reranker</h3>
+<div class="row">
+  <div class="reranker-dependent"><label>Reranker Provider</label><select id="cfg-RERANKER_PROVIDER"><option value="">(无)</option><option value="dashscope">DashScope</option><option value="siliconflow">SiliconFlow</option></select></div>
+  <div class="reranker-dependent"><label>Reranker Model</label><span class="model-test-wrap"><input id="cfg-RERANKER_MODEL" placeholder="qwen3-rerank"><button id="btn-test-reranker" type="button" class="model-test-btn" onclick="testRerankerOnly()" tabindex="-1" title="测试 Reranker"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/></svg></button></span></div>
+</div>
+<div class="row">
+  <div class="reranker-dependent"><label>Reranker API Key</label><span class="pwd-wrap"><input id="cfg-RERANKER_API_KEY" type="password" placeholder="sk-..."><button type="button" class="pwd-toggle" onclick="toggleApiKey(this)" tabindex="-1"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 11 11 0 0 1 19.876 0 1 1 0 0 1 0 .696 11 11 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg></button></span></div>
+  <div style="display:flex;align-items:center;min-height:100%"><label style="margin-bottom:0"><input id="cfg-RERANKER_ENABLED" type="checkbox" onchange="onRerankerToggle()"> 启用 Reranker</label></div>
 </div>
 
 <h3>粗筛 (Coarse)</h3>
@@ -1284,9 +1341,9 @@ async def test_llm(body: dict[str, Any] = Body({})) -> dict[str, Any]:
         base_url = body.get("base_url") or _resolve_base_url(provider)
 
         llm = ChatOpenAI(model=model, temperature=0.0, api_key=api_key, base_url=base_url)
-        resp = llm.invoke([HumanMessage(content="Respond with only: OK")])
+        resp = llm.invoke([HumanMessage(content='Hello (Please reply "Hello" directly without any extra explanations or thoughts.)')])
         msg = resp.content.strip()[:100] if hasattr(resp, "content") else str(resp)[:100]
-        return {"ok": True, "message": f"LLM 响应正常: {msg}"}
+        return {"ok": True, "message": f"{model} 连接成功: {msg}"}
     except Exception as e:
         return {"ok": False, "message": f"LLM 测试失败: {str(e)[:200]}"}
 
@@ -1319,7 +1376,7 @@ async def test_embedding(body: dict[str, Any] = Body({})) -> dict[str, Any]:
                 data = resp.json()
                 items = data.get("data", [])
                 dim = len(items[0]["embedding"]) if items else 0
-                return {"ok": True, "message": f"Embedding 正常 (SiliconFlow)，向量维度: {dim}"}
+                return {"ok": True, "message": f"{model} 连接成功 (SiliconFlow)，向量维度: {dim}"}
             err = resp.text[:200]
             return {"ok": False, "message": f"SiliconFlow Embedding 返回错误 ({resp.status_code}): {err}"}
 
@@ -1336,7 +1393,7 @@ async def test_embedding(body: dict[str, Any] = Body({})) -> dict[str, Any]:
             resp = dashscope.TextEmbedding.call(model=model, input="test query", api_key=api_key)
         if resp.status_code == HTTPStatus.OK:
             dim = len(resp.output["embeddings"][0]["embedding"])
-            return {"ok": True, "message": f"Embedding 正常 (DashScope)，向量维度: {dim}"}
+            return {"ok": True, "message": f"{model} 连接成功 (DashScope)，向量维度: {dim}"}
         detail = getattr(resp, "message", "") or ""
         code = getattr(resp, "code", "") or ""
         return {"ok": False, "message": f"Embedding 返回错误 ({resp.status_code}): {code} {detail}".strip()}
@@ -1368,7 +1425,7 @@ async def test_reranker(body: dict[str, Any] = Body({})) -> dict[str, Any]:
                 timeout=30.0,
             )
             if resp.status_code == 200:
-                return {"ok": True, "message": "Reranker API 正常 (SiliconFlow)"}
+                return {"ok": True, "message": f"{model} 连接成功 (SiliconFlow)"}
             err = resp.text[:200]
             return {"ok": False, "message": f"SiliconFlow Reranker 返回错误 ({resp.status_code}): {err}"}
 
@@ -1381,7 +1438,7 @@ async def test_reranker(body: dict[str, Any] = Body({})) -> dict[str, Any]:
             top_n=1, return_documents=False, api_key=api_key,
         )
         if resp.status_code == HTTPStatus.OK:
-            return {"ok": True, "message": "Reranker API 正常 (DashScope)"}
+            return {"ok": True, "message": f"{model} 连接成功 (DashScope)"}
         return {"ok": False, "message": f"Reranker 返回错误: {resp.status_code} - {resp.message}"}
     except Exception as e:
         return {"ok": False, "message": f"Reranker 测试失败: {str(e)[:200]}"}
