@@ -196,7 +196,7 @@ def _config_schema() -> dict[str, dict[str, Any]]:
         "LLM_PROVIDER": {"type": "select", "default": "openai", "options": ["openai", "dashscope", "siliconflow", "zhipuai"]},
         "LLM_MODEL": {"type": "string", "default": "gpt-4o-mini"},
         "LLM_FAST_MODEL": {"type": "string", "default": "gpt-4o-mini"},
-        "BASE_URL": {"type": "string", "default": "https://api.openai.com/v1"},
+        "OPENAI_BASE_URL": {"type": "string", "default": "https://api.openai.com/v1"},
         "LLM_API_KEY": {"type": "string", "default": ""},
         "LLM_THINKING": {"type": "select", "default": "none", "options": ["off", "none", "minimal", "low", "medium", "high", "xhigh"]},
         "SEMANTIC_SCHOLAR_API_KEY": {"type": "string", "default": ""},
@@ -258,7 +258,7 @@ _CONFIG_HELP: dict[str, str] = {
     "LLM_PROVIDER": "LLM 提供商。openai/dashscope/siliconflow/zhipuai，切换后自动填充 Base URL 和推荐模型。",
     "LLM_MODEL": "LLM 模型名称，用于查询理解和精筛。示例：qwen3.6-plus / gpt-4o-mini",
     "LLM_FAST_MODEL": "轻量 LLM 模型，用于快速任务。不配置则回退到 LLM_MODEL。示例：qwen3.6-flash-nothinking",
-    "BASE_URL": "LLM API 端点 URL，按当前选择的 LLM_PROVIDER 自动切换默认值。也可手动自定义。示例：https://api.openai.com/v1",
+    "OPENAI_BASE_URL": "OpenAI 兼容 API 端点 URL，按当前选择的 LLM_PROVIDER 自动切换默认值。也可手动自定义。示例：https://api.openai.com/v1",
     "LLM_API_KEY": "LLM API 认证密钥。示例：sk-...",
     "LLM_THINKING": "控制 LLM 思考/推理深度。none=关闭，off=不传参(API默认)，minimal~xhigh=递增推理强度。DashScope 仅支持开/关。",
     "SEMANTIC_SCHOLAR_API_KEY": "S2 API Key（可选）。有 key 可提升速率限制，留空使用公共端点。示例：40字符字符串",
@@ -481,7 +481,7 @@ _SEARCH_PAGE_HTML = """<!DOCTYPE html>
 调用 <b>LLM_FAST_MODEL</b> 将自然语言转为结构化 QueryPlan JSON。<br>
 使用 <b>with_structured_output</b> + Pydantic 强制输出 schema。<br>
 思考程度由 <b>LLM_THINKING</b> 控制。<br>
-API: <b>LLM_PROVIDER</b> → <b>BASE_URL</b><br>
+API: <b>LLM_PROVIDER</b> → <b>OPENAI_BASE_URL</b><br>
 输出: query_type, hard_filters, ranking_signals, semantic_queries, sub_queries_for_retrieval, api_payload_translation<br><br>
 
 <b>📡 多源检索</b><br>
@@ -779,7 +779,7 @@ function openConfig() {
     form.dataset.listenerBound = '1';
   }
   // Track manual edits on LLM model/base_url fields
-  ['cfg-BASE_URL', 'cfg-LLM_MODEL', 'cfg-LLM_FAST_MODEL'].forEach(function(id) {
+  ['cfg-OPENAI_BASE_URL', 'cfg-LLM_MODEL', 'cfg-LLM_FAST_MODEL'].forEach(function(id) {
     const el = document.getElementById(id);
     if (el && !el.dataset.editBound) {
       el.addEventListener('input', _markEdited);
@@ -787,6 +787,8 @@ function openConfig() {
       el.dataset.editBound = '1';
     }
   });
+  // 先根据当前 Provider 设置 Base URL / Model 默认值，再用 .env 配置覆盖
+  onLLMProviderChange();
   // Populate form from configData — values are now objects {value, help, required, ...}
   for (const [k, v] of Object.entries(configData)) {
     if (k === '_validate') continue;
@@ -797,11 +799,10 @@ function openConfig() {
     else el.value = realVal;
   }
   ov.classList.add('show');
-  // 防止 onLLMProviderChange 用硬编码默认值覆盖 .env 配置
-	_userEdited.add('cfg-LLM_MODEL');
-	_userEdited.add('cfg-LLM_FAST_MODEL');
-	_userEdited.add('cfg-BASE_URL');
-	onLLMProviderChange();
+  // 防止 onLLMProviderChange 用硬编码默认值覆盖 .env 配置的 Model 字段
+  _userEdited.add('cfg-LLM_MODEL');
+  _userEdited.add('cfg-LLM_FAST_MODEL');
+  // 注意: cfg-OPENAI_BASE_URL 不加入 _userEdited，切换供应商时始终更新 Base URL
   _renderHelpIcons();
   updateEmbDependent();
   updateRerankerDependent();
@@ -899,7 +900,7 @@ function testLLM() {
     provider: _getFormValue('LLM_PROVIDER'),
     api_key: _getFormValue('LLM_API_KEY'),
     model: _getFormValue('LLM_MODEL'),
-    base_url: _getFormValue('BASE_URL'),
+    base_url: _getFormValue('OPENAI_BASE_URL'),
   });
 }
 
@@ -1028,6 +1029,14 @@ const PROVIDER_DEFAULTS = {
   },
 };
 
+// Base URL field labels per provider (dynamic label in settings panel)
+const BASE_URL_LABELS = {
+  openai: 'OpenAI Base URL',
+  dashscope: 'DashScope Base URL',
+  siliconflow: 'SiliconFlow Base URL',
+  zhipuai: 'ZhipuAI Base URL',
+};
+
 // Free model hints per provider
 const PROVIDER_FREE_HINTS = {
   siliconflow: '🆓 免费模型: deepseek-ai/DeepSeek-R1-0528-Qwen3-8B, THUDM/GLM-Z1-9B-0414, THUDM/GLM-4-9B-0414',
@@ -1048,9 +1057,9 @@ function onLLMProviderChange() {
   const defaults = PROVIDER_DEFAULTS[provider];
   if (!defaults) return;
 
-  // Auto-fill fields only if user hasn't manually edited them
+  // Auto-fill model fields only if user hasn't manually edited them.
+  // Base URL always auto-fills on provider switch.
   const pairs = [
-    ['cfg-BASE_URL', defaults.base_url],
     ['cfg-LLM_MODEL', defaults.model],
     ['cfg-LLM_FAST_MODEL', defaults.fast_model],
   ];
@@ -1062,6 +1071,20 @@ function onLLMProviderChange() {
     hintEl.textContent = hint;
     hintEl.style.display = hint ? 'block' : 'none';
   }
+
+  // Always update Base URL label, placeholder, and value on provider switch
+  const baseUrlLabel = document.getElementById('cfg-label-OPENAI_BASE_URL');
+  if (baseUrlLabel) {
+    baseUrlLabel.textContent = BASE_URL_LABELS[provider] || 'Base URL';
+  }
+  const baseUrlEl = document.getElementById('cfg-OPENAI_BASE_URL');
+  if (baseUrlEl) {
+    baseUrlEl.placeholder = defaults.base_url;
+    // Always set value to the provider's default — .env values will override
+    // this after the initial population in openConfig()
+    baseUrlEl.value = defaults.base_url;
+  }
+
   pairs.forEach(function([id, val]) {
     if (!_userEdited.has(id)) {
       const el = document.getElementById(id);
@@ -1146,7 +1169,7 @@ loadConfig();
 </div>
   <div id="llm-free-hint" style="display:none;font-size:11px;color:#888;margin:-8px 0 8px;padding-left:2px"></div>
 <div class="row">
-  <div><label>Base URL</label><input id="cfg-BASE_URL" placeholder="https://api.openai.com/v1"></div>
+  <div><label id="cfg-label-OPENAI_BASE_URL">OpenAI Base URL</label><input id="cfg-OPENAI_BASE_URL" placeholder="https://api.openai.com/v1"></div>
   <div><label>LLM API Key</label><span class="pwd-wrap"><input id="cfg-LLM_API_KEY" type="password" placeholder="sk-..."><button type="button" class="pwd-toggle" onclick="toggleApiKey(this)" tabindex="-1"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 11 11 0 0 1 19.876 0 1 1 0 0 1 0 .696 11 11 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg></button></span></div>
 </div>
 <div style="margin:-8px 0 12px;text-align:right"><button id="btn-test-llm" type="button" class="test-btn test-btn-idle" onclick="testLLM()">🔗 测试连接</button></div>
@@ -1257,11 +1280,8 @@ async def test_llm(body: dict[str, Any] = Body({})) -> dict[str, Any]:
         provider = body.get("provider") or os.getenv("LLM_PROVIDER", "openai")
         api_key = body.get("api_key") or os.getenv("LLM_API_KEY", "")
         model = body.get("model") or os.getenv("LLM_MODEL") or os.getenv("LLM_FAST_MODEL") or "gpt-4o-mini"
-        base_url = body.get("base_url") or os.getenv("BASE_URL") or {
-            "dashscope": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-            "siliconflow": "https://api.siliconflow.cn/v1",
-            "zhipuai": "https://open.bigmodel.cn/api/paas/v4",
-        }.get(provider, "https://api.openai.com/v1")
+        from paper_search.llm import _resolve_base_url
+        base_url = body.get("base_url") or _resolve_base_url(provider)
 
         llm = ChatOpenAI(model=model, temperature=0.0, api_key=api_key, base_url=base_url)
         resp = llm.invoke([HumanMessage(content="Respond with only: OK")])
