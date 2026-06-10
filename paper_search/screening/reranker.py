@@ -39,7 +39,7 @@ def rerank(pool: CandidatePool, query_plan: QueryPlan) -> list[Paper]:
         return papers
 
     provider = os.getenv("RERANKER_PROVIDER", "")
-    reranker_enabled = os.getenv("RERANKER_ENABLED", "false").lower() not in ("0", "false", "no")
+    reranker_enabled = os.getenv("RERANKER_ENABLED", "true").lower() not in ("0", "false", "no")
     if not provider or not reranker_enabled:
         reason = "RERANKER_PROVIDER not set" if not provider else "RERANKER_ENABLED=false"
         logger.info("Reranker skipped (%s), passing %d papers through", reason, len(papers))

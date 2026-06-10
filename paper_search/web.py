@@ -54,6 +54,13 @@ def api_status() -> dict[str, Any]:
         keys["embedding"] = "disabled"
     else:
         keys["embedding"] = emb_has_key
+    # reranker badge: grey=disabled, red=missing, green=ok
+    reranker_enabled = os.getenv("RERANKER_ENABLED", "true").lower() not in ("0", "false", "no")
+    reranker_has_key = bool(os.getenv("RERANKER_API_KEY"))
+    if not reranker_enabled:
+        keys["reranker"] = "disabled"
+    else:
+        keys["reranker"] = reranker_has_key
     return {"keys": keys, "backend": "live", "config_ready": _is_config_ready()["ready"]}
 
 
@@ -223,7 +230,7 @@ def _config_schema() -> dict[str, dict[str, Any]]:
         "EMBEDDING_CONCURRENCY": {"type": "int", "default": "10"},
         "EMBEDDING_RPS_LIMIT": {"type": "int", "default": "15"},
         "EMBEDDING_ENABLED": {"type": "bool", "default": "true"},
-        "RERANKER_ENABLED": {"type": "bool", "default": "false"},
+        "RERANKER_ENABLED": {"type": "bool", "default": "true"},
         # Judge
         "JUDGE_CONCURRENCY": {"type": "int", "default": "100"},
         "JUDGE_WAVE_CAP": {"type": "int", "default": "5000"},
@@ -247,7 +254,7 @@ def _is_config_ready() -> dict[str, Any]:
     embedding_enabled = os.getenv("EMBEDDING_ENABLED", "true").lower() not in ("0", "false", "no")
     if not embedding_enabled:
         missing = [m for m in missing if not m.startswith("EMBEDDING_")]
-    reranker_enabled = os.getenv("RERANKER_ENABLED", "false").lower() not in ("0", "false", "no")
+    reranker_enabled = os.getenv("RERANKER_ENABLED", "true").lower() not in ("0", "false", "no")
     if not reranker_enabled:
         missing = [m for m in missing if not m.startswith("RERANKER_")]
     ready = len(missing) == 0
