@@ -23,7 +23,6 @@ of a 100 GB+ GC death spiral during test discovery.
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, TypedDict
 
@@ -116,18 +115,19 @@ Existing keywords already searched:
 
 Extract {_QUERY_EVOLUTION_MAX_KEYWORDS} new search keywords or short phrases (in English, 1-4 words each) that represent aspects NOT yet covered by existing keywords. Focus on specific methods, techniques, or concepts from the papers above.
 
-Return ONLY a JSON array of strings, nothing else. Example: ["keyword one", "keyword two", "keyword three"]"""
+Return a JSON object with a "keywords" array. Example: {"keywords": ["keyword one", "keyword two", "keyword three"]}"""
 
     try:
-        from ..llm import get_fast_llm
         from langchain_core.messages import HumanMessage
 
-        llm = get_fast_llm(temperature=0.0)
-        response = llm.invoke([HumanMessage(content=prompt)])
-        raw = response.content.strip() if hasattr(response, "content") else str(response).strip()
+        from ..llm import get_fast_llm
+        from ..schemas import KeywordList
 
-        # Parse JSON array from LLM response
-        keywords = _parse_json_array(raw)
+        llm = get_fast_llm(temperature=0.0)
+        structured_llm = llm.with_structured_output(KeywordList, method="function_calling")
+        result: KeywordList = structured_llm.invoke([HumanMessage(content=prompt)])
+        keywords = result.keywords
+
         if keywords:
             # Deduplicate against existing keywords
             new_unique = [kw for kw in keywords if kw.lower() not in {k.lower() for k in existing_kw}]
@@ -343,33 +343,6 @@ def _check_convergence(state: SnowballState) -> SnowballState:
     return state
 
 
-def _parse_json_array(text: str) -> list[str]:
-    """Parse a JSON array of strings from LLM response text.
-
-    Tries direct ``json.loads`` first; if that fails, attempts to locate
-    ``[...]`` brackets and parse the enclosed content.
-    """
-    text = text.strip()
-    # Try direct parse
-    try:
-        parsed = json.loads(text)
-        if isinstance(parsed, list) and all(isinstance(item, str) for item in parsed):
-            return parsed
-    except json.JSONDecodeError:
-        pass
-
-    # Fallback: find [...] and parse just that portion
-    start = text.find("[")
-    end = text.rfind("]")
-    if start != -1 and end > start:
-        try:
-            parsed = json.loads(text[start: end + 1])
-            if isinstance(parsed, list):
-                return [str(item) for item in parsed if isinstance(item, str)]
-        except json.JSONDecodeError:
-            pass
-
-    return []
 
 
 def _continue_snowball(state: SnowballState) -> str:
