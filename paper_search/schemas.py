@@ -220,3 +220,28 @@ class QueryPlanSchema(BaseModel):
             api_payload_translation=self.api_payload_translation.model_dump(),  # type: ignore[arg-type]
             query_expansion_policy=self.query_expansion_policy.model_dump(),
         )
+
+
+# ── Per-paper judge verdict (used with with_structured_output) ──
+
+class JudgeVerdict(BaseModel):
+    """Single-paper relevance verdict from LLM judge."""
+
+    paper_id: str = Field(description="The paper ID being judged (as provided).")
+    relevance: Literal["高度相关", "部分相关", "不相关"] = Field(
+        description="Relevance level: 高度相关 (highly relevant), 部分相关 (partially relevant), or 不相关 (not relevant)."
+    )
+    reason: str = Field(description="One sentence explaining the relevance decision.")
+    contribution: str = Field(description="One sentence describing the paper's main contribution.")
+
+
+# ── Keyword list for query evolution (used with with_structured_output) ──
+
+class KeywordList(BaseModel):
+    """List of search keywords extracted by LLM for query evolution."""
+
+    keywords: list[str] = Field(
+        min_length=1,
+        max_length=10,
+        description="English search keywords or short phrases (1-4 words each).",
+    )

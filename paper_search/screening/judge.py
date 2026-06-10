@@ -92,12 +92,12 @@ def _judge_wave(pool: CandidatePool, query_plan: QueryPlan, papers: list[Paper])
 
 
 def _judge_single(query_plan: QueryPlan, paper: Paper) -> dict[str, str] | None:
-    """Score a single paper via LLM. Returns dict with keys: relevance, reason, contribution."""
+    """Score a single paper via LLM with structured output."""
     from langchain_core.messages import HumanMessage, SystemMessage
-    from langchain_core.output_parsers import JsonOutputParser
 
     from ..llm import get_fast_llm
     from ..prompts import JUDGE_SINGLE_PROMPT
+    from ..schemas import JudgeVerdict
 
     prompt_text = (
         JUDGE_SINGLE_PROMPT
@@ -109,20 +109,18 @@ def _judge_single(query_plan: QueryPlan, paper: Paper) -> dict[str, str] | None:
         .replace("{year}", str(paper.year or ""))
     )
     llm = get_fast_llm(temperature=0.0)
-    parser = JsonOutputParser()
+    structured_llm = llm.with_structured_output(JudgeVerdict, method="function_calling")
 
     try:
-        response = llm.invoke([
+        result: JudgeVerdict = structured_llm.invoke([
             SystemMessage(content=prompt_text),
             HumanMessage(content="请评估这篇论文并返回 JSON 对象"),
         ])
-        result = parser.parse(response.content)  # type: ignore[arg-type]
-        if isinstance(result, dict):
-            return {
-                "relevance": str(result.get("relevance", "不相关")),
-                "reason": str(result.get("reason", "")),
-                "contribution": str(result.get("contribution", "")),
-            }
+        return {
+            "relevance": result.relevance,
+            "reason": result.reason,
+            "contribution": result.contribution,
+        }
     except Exception:
         logger.warning("Single-paper judge failed for %s", paper.id, exc_info=True)
     return None
