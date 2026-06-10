@@ -54,6 +54,13 @@ def api_status() -> dict[str, Any]:
         keys["embedding"] = "disabled"
     else:
         keys["embedding"] = emb_has_key
+    # reranker badge: grey=disabled, red=missing, green=ok
+    reranker_enabled = os.getenv("RERANKER_ENABLED", "true").lower() not in ("0", "false", "no")
+    reranker_has_key = bool(os.getenv("RERANKER_API_KEY"))
+    if not reranker_enabled:
+        keys["reranker"] = "disabled"
+    else:
+        keys["reranker"] = reranker_has_key
     return {"keys": keys, "backend": "live", "config_ready": _is_config_ready()["ready"]}
 
 
@@ -223,7 +230,7 @@ def _config_schema() -> dict[str, dict[str, Any]]:
         "EMBEDDING_CONCURRENCY": {"type": "int", "default": "10"},
         "EMBEDDING_RPS_LIMIT": {"type": "int", "default": "15"},
         "EMBEDDING_ENABLED": {"type": "bool", "default": "true"},
-        "RERANKER_ENABLED": {"type": "bool", "default": "false"},
+        "RERANKER_ENABLED": {"type": "bool", "default": "true"},
         # Judge
         "JUDGE_CONCURRENCY": {"type": "int", "default": "100"},
         "JUDGE_WAVE_CAP": {"type": "int", "default": "5000"},
@@ -247,7 +254,7 @@ def _is_config_ready() -> dict[str, Any]:
     embedding_enabled = os.getenv("EMBEDDING_ENABLED", "true").lower() not in ("0", "false", "no")
     if not embedding_enabled:
         missing = [m for m in missing if not m.startswith("EMBEDDING_")]
-    reranker_enabled = os.getenv("RERANKER_ENABLED", "false").lower() not in ("0", "false", "no")
+    reranker_enabled = os.getenv("RERANKER_ENABLED", "true").lower() not in ("0", "false", "no")
     if not reranker_enabled:
         missing = [m for m in missing if not m.startswith("RERANKER_")]
     ready = len(missing) == 0
@@ -258,7 +265,7 @@ _CONFIG_HELP: dict[str, str] = {
     "LLM_PROVIDER": "LLM 提供商。openai/dashscope/siliconflow/zhipuai，切换后自动填充 Base URL 和推荐模型。",
     "LLM_MODEL": "LLM 模型名称，用于查询理解和精筛。示例：qwen3.6-plus / gpt-4o-mini",
     "LLM_FAST_MODEL": "轻量 LLM 模型，用于快速任务。不配置则回退到 LLM_MODEL。示例：qwen3.6-flash-nothinking",
-    "OPENAI_BASE_URL": "OpenAI 兼容 API 端点 URL。留空默认使用 OpenAI 官方节点 (https://api.openai.com/v1)。示例：https://api.openai.com/v1",
+    "OPENAI_BASE_URL": "OpenAI 兼容 API 端点 URL，按当前选择的 LLM_PROVIDER 自动切换默认值。也可手动自定义。示例：https://api.openai.com/v1",
     "LLM_API_KEY": "LLM API 认证密钥。示例：sk-...",
     "LLM_THINKING": "控制 LLM 思考/推理深度。none=关闭，off=不传参(API默认)，minimal~xhigh=递增推理强度。DashScope 仅支持开/关。",
     "SEMANTIC_SCHOLAR_API_KEY": "S2 API Key（可选）。有 key 可提升速率限制，留空使用公共端点。示例：40字符字符串",
@@ -448,8 +455,9 @@ _SEARCH_PAGE_HTML = """<!DOCTYPE html>
   .help-icon-missing:hover { background: #f5c6c6; }
   .help-icon-ok { background: #e8f5e9; color: #2e7d32; }
   .help-icon-ok:hover { background: #c8e6c9; }
-  /* Help tooltip — shows below the icon */
+  /* Help tooltip — auto-flip to avoid overflow past modal right edge */
   .help-icon .help-tip { display: none; position: absolute; top: 100%; left: 0; background: #1a1a2e; color: #fff; padding: 6px 10px; border-radius: 6px; font-size: 12px; width: 260px; max-height: 160px; overflow-y: auto; z-index: 500; box-shadow: 0 4px 12px rgba(0,0,0,0.2); line-height: 1.4; font-weight: normal; white-space: normal; text-align: left; margin-top: 4px; }
+  .help-icon-right .help-tip { left: auto; right: 0; }
   .help-icon .help-tip::-webkit-scrollbar { width: 4px; }
   .help-icon .help-tip::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.25); border-radius: 2px; }
   .help-icon:hover .help-tip, .help-tip:hover { display: block; }
@@ -465,6 +473,23 @@ _SEARCH_PAGE_HTML = """<!DOCTYPE html>
   /* Embedding disabled state */
   .emb-disabled { opacity: 0.4; pointer-events: none; }
   .reranker-disabled { opacity: 0.4; pointer-events: none; }
+  /* In-input model test button (radio icon) */
+  .model-test-wrap { position: relative; display: flex; align-items: center; }
+  .model-test-wrap input { width: 100%; padding-right: 32px; box-sizing: border-box; }
+  .model-test-btn { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; padding: 2px; color: #999; display: flex; align-items: center; }
+  .model-test-btn:hover { color: #555; background: rgba(0,0,0,0.06); border-radius: 4px; }
+  .model-test-btn svg { width: 18px; height: 18px; }
+  .model-test-ok { color: #2e7d32 !important; }
+  .model-test-ok:hover { color: #1b5e20 !important; }
+  .model-test-fail { color: #d32f2f !important; }
+  .model-test-fail:hover { color: #b71c1c !important; }
+  .model-test-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  /* Password toggle button */
+  .pwd-wrap { position: relative; display: flex; align-items: center; }
+  .pwd-wrap input { width: 100%; padding-right: 32px; box-sizing: border-box; }
+  .pwd-toggle { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; padding: 2px; color: #999; display: flex; align-items: center; }
+  .pwd-toggle:hover { color: #555; background: rgba(0,0,0,0.06); border-radius: 4px; }
+  .pwd-toggle svg { width: 18px; height: 18px; }
 </style>
 </head>
 <body>
@@ -650,6 +675,9 @@ async function doSearch() {
   });
 
   evtSource.addEventListener('result', function(e) {
+    const data = JSON.parse(e.data);
+    papers = data.papers || [];
+    evaluation = data.evaluation || {};
     evtSource.close();
     if (window._evtSource === evtSource) window._evtSource = null;
     btn.dataset.searching = '0';
@@ -703,7 +731,7 @@ async function doSearch() {
     html += '</div>';
     resultDiv.innerHTML = html;
     // Apply timings from SSE result event directly as tooltip on stage labels
-    if (d.timings) { applyTimings(d.timings); }
+    if (data.timings) { applyTimings(data.timings); }
     btn.dataset.searching = '0';
     btn.className = '';
     btn.textContent = '检索';
@@ -759,6 +787,11 @@ function _isDirty() {
 
 function _markDirty() { configDirty = true; }
 
+const EYE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 11 11 0 0 1 19.876 0 1 1 0 0 1 0 .696 11 11 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.733 5.076A10.744 10.744 0 0 1 12 5c5 0 9.27 3.11 11 8-1.17 3.31-3.37 5.73-6.12 7.03"/><path d="M14.12 14.121A3 3 0 1 1 9.88 9.88"/><path d="M1 1l22 22"/><path d="M4.22 4.22A11 11 0 0 0 2 12c1.17 3.31 3.37 5.73 6.12 7.03A11.85 11.85 0 0 0 12 20c2.01 0 3.89-.53 5.5-1.47"/></svg>';
+const RADIO_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/></svg>';
+function toggleApiKey(btn) { var inp = btn.parentElement.querySelector("input"); if (inp.type === "password") { inp.type = "text"; btn.innerHTML = EYE_OFF_SVG; } else { inp.type = "password"; btn.innerHTML = EYE_SVG; } }
+
 function openConfig() {
   const ov = document.getElementById('config-overlay');
   // Bind dirty listener on first open (form exists by now)
@@ -777,6 +810,8 @@ function openConfig() {
       el.dataset.editBound = '1';
     }
   });
+  // 先根据当前 Provider 设置 Base URL / Model 默认值，再用 .env 配置覆盖
+  onLLMProviderChange();
   // Populate form from configData — values are now objects {value, help, required, ...}
   for (const [k, v] of Object.entries(configData)) {
     if (k === '_validate') continue;
@@ -787,7 +822,11 @@ function openConfig() {
     else el.value = realVal;
   }
   ov.classList.add('show');
-  onLLMProviderChange();
+  // 防止 onLLMProviderChange 用硬编码默认值覆盖 .env 配置的 Model 字段
+  _userEdited.add('cfg-LLM_MODEL');
+  _userEdited.add('cfg-LLM_FAST_MODEL');
+  // 注意: cfg-OPENAI_BASE_URL 不加入 _userEdited，切换供应商时始终更新 Base URL
+  _restoreModelTestStates();
   _renderHelpIcons();
   updateEmbDependent();
   updateRerankerDependent();
@@ -856,9 +895,33 @@ function _getFormValue(key) {
   return el.type === 'checkbox' ? (el.checked ? 'true' : 'false') : el.value;
 }
 
+// Cache model test results so the colour persists as a reminder.
+// Cleared when the config panel opens.
+var _modelTestCache = {};
+
+function _setModelTestState(btnId, ok) {
+  var btn = document.getElementById(btnId);
+  if (btn) {
+    btn.className = 'model-test-btn ' + (ok ? 'model-test-ok' : 'model-test-fail');
+    btn.disabled = false;
+  }
+}
+
+function _restoreModelTestStates() {
+  // Restore cached colours for any previously-tested model buttons
+  Object.keys(_modelTestCache).forEach(function(btnId) {
+    var btn = document.getElementById(btnId);
+    if (btn) {
+      btn.className = 'model-test-btn ' + (_modelTestCache[btnId] ? 'model-test-ok' : 'model-test-fail');
+      btn.disabled = false;
+    }
+  });
+}
+
 async function _callTest(endpoint, btnId, body) {
   const btn = document.getElementById(btnId);
-  if (btn) { btn.disabled = true; btn.textContent = '测试中...'; }
+  const isIcon = btn && btn.classList.contains('model-test-btn');
+  if (btn) { btn.disabled = true; if (!isIcon) btn.textContent = '测试中...'; }
   try {
     const opts = { method: 'POST' };
     if (body) { opts.headers = {'Content-Type': 'application/json'}; opts.body = JSON.stringify(body); }
@@ -866,25 +929,42 @@ async function _callTest(endpoint, btnId, body) {
     const d = await r.json();
     showTestToast(d.message, d.ok);
     if (btn) {
-      btn.className = 'test-btn ' + (d.ok ? 'test-btn-ok' : 'test-btn-fail');
-      btn.textContent = d.ok ? '✓ 正常' : '✗ 失败';
-      setTimeout(function() {
-        btn.className = 'test-btn test-btn-idle';
-        btn.textContent = '测试';
-        btn.disabled = false;
-      }, 4000);
+      if (isIcon) {
+        _modelTestCache[btnId] = d.ok;
+        _setModelTestState(btnId, d.ok);
+      } else {
+        btn.className = 'test-btn ' + (d.ok ? 'test-btn-ok' : 'test-btn-fail');
+        btn.textContent = d.ok ? '✓ 正常' : '✗ 失败';
+        setTimeout(function() {
+          btn.className = 'test-btn test-btn-idle';
+          btn.textContent = '测试';
+          btn.disabled = false;
+        }, 4000);
+      }
     }
   } catch (e) {
     showTestToast('请求失败: ' + e.message, false);
-    if (btn) { btn.disabled = false; btn.textContent = '测试'; }
+    if (btn) {
+      if (isIcon) { _modelTestCache[btnId] = false; _setModelTestState(btnId, false); }
+      else { btn.textContent = '测试'; btn.disabled = false; }
+    }
   }
 }
 
-function testLLM() {
-  _callTest('/api/test/llm', 'btn-test-llm', {
+function testLLMModel() {
+  _callTest('/api/test/llm', 'btn-test-llm-model', {
     provider: _getFormValue('LLM_PROVIDER'),
     api_key: _getFormValue('LLM_API_KEY'),
     model: _getFormValue('LLM_MODEL'),
+    base_url: _getFormValue('OPENAI_BASE_URL'),
+  });
+}
+
+function testLLMFastModel() {
+  _callTest('/api/test/llm', 'btn-test-llm-fast', {
+    provider: _getFormValue('LLM_PROVIDER'),
+    api_key: _getFormValue('LLM_API_KEY'),
+    model: _getFormValue('LLM_FAST_MODEL'),
     base_url: _getFormValue('OPENAI_BASE_URL'),
   });
 }
@@ -1014,6 +1094,14 @@ const PROVIDER_DEFAULTS = {
   },
 };
 
+// Base URL field labels per provider (dynamic label in settings panel)
+const BASE_URL_LABELS = {
+  openai: 'OpenAI Base URL',
+  dashscope: 'DashScope Base URL',
+  siliconflow: 'SiliconFlow Base URL',
+  zhipuai: 'ZhipuAI Base URL',
+};
+
 // Free model hints per provider
 const PROVIDER_FREE_HINTS = {
   siliconflow: '🆓 免费模型: deepseek-ai/DeepSeek-R1-0528-Qwen3-8B, THUDM/GLM-Z1-9B-0414, THUDM/GLM-4-9B-0414',
@@ -1034,9 +1122,9 @@ function onLLMProviderChange() {
   const defaults = PROVIDER_DEFAULTS[provider];
   if (!defaults) return;
 
-  // Auto-fill fields only if user hasn't manually edited them
+  // Auto-fill model fields only if user hasn't manually edited them.
+  // Base URL always auto-fills on provider switch.
   const pairs = [
-    ['cfg-OPENAI_BASE_URL', defaults.base_url],
     ['cfg-LLM_MODEL', defaults.model],
     ['cfg-LLM_FAST_MODEL', defaults.fast_model],
   ];
@@ -1048,6 +1136,20 @@ function onLLMProviderChange() {
     hintEl.textContent = hint;
     hintEl.style.display = hint ? 'block' : 'none';
   }
+
+  // Always update Base URL label, placeholder, and value on provider switch
+  const baseUrlLabel = document.getElementById('cfg-label-OPENAI_BASE_URL');
+  if (baseUrlLabel) {
+    baseUrlLabel.textContent = BASE_URL_LABELS[provider] || 'Base URL';
+  }
+  const baseUrlEl = document.getElementById('cfg-OPENAI_BASE_URL');
+  if (baseUrlEl) {
+    baseUrlEl.placeholder = defaults.base_url;
+    // Always set value to the provider's default — .env values will override
+    // this after the initial population in openConfig()
+    baseUrlEl.value = defaults.base_url;
+  }
+
   pairs.forEach(function([id, val]) {
     if (!_userEdited.has(id)) {
       const el = document.getElementById(id);
@@ -1083,14 +1185,18 @@ function _renderHelpIcons() {
     var key = input.id.slice(4);
     var cv = configData[key];
     if (!cv || typeof cv !== 'object') return;
-    var label = input.closest('.row > div') ? input.closest('.row > div').querySelector('label') : null;
+    var parentDiv = input.closest('.row > div');
+    var label = parentDiv ? parentDiv.querySelector('label') : null;
     if (!label) return;
+    // Check if this field is in the right column → flip tooltip leftwards
+    var isRightCol = parentDiv && parentDiv.parentElement && parentDiv === parentDiv.parentElement.children[1];
     // Remove any existing icon for this field
     var existing = label.querySelector('.help-icon');
     if (existing) existing.remove();
     // Create new icon with tooltip
     var icon = document.createElement('span');
     icon.className = 'help-icon';
+    if (isRightCol) icon.classList.add('help-icon-right');
     icon.textContent = '?';
     var tip = document.createElement('span');
     tip.className = 'help-tip';
@@ -1127,19 +1233,18 @@ loadConfig();
   <div><label>思考程度</label><select id="cfg-LLM_THINKING"></select></div>
 </div>
 <div class="row">
-  <div><label>LLM Model</label><input id="cfg-LLM_MODEL" placeholder="gpt-4o-mini"></div>
-  <div><label>LLM Fast Model</label><input id="cfg-LLM_FAST_MODEL" placeholder="gpt-4o-mini"></div>
+  <div><label>LLM Model</label><span class="model-test-wrap"><input id="cfg-LLM_MODEL" placeholder="gpt-4o-mini"><button id="btn-test-llm-model" type="button" class="model-test-btn" onclick="testLLMModel()" tabindex="-1" title="测试模型响应"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/></svg></button></span></div>
+  <div><label>LLM Fast Model</label><span class="model-test-wrap"><input id="cfg-LLM_FAST_MODEL" placeholder="gpt-4o-mini"><button id="btn-test-llm-fast" type="button" class="model-test-btn" onclick="testLLMFastModel()" tabindex="-1" title="测试模型响应"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/></svg></button></span></div>
 </div>
+  <div id="llm-free-hint" style="display:none;font-size:11px;color:#888;margin:-8px 0 8px;padding-left:2px"></div>
 <div class="row">
-  <div><label>OpenAI Base URL</label><input id="cfg-OPENAI_BASE_URL" placeholder="https://api.openai.com/v1"></div>
-  <div id="llm-free-hint" style="display:none;grid-column:1/-1;font-size:11px;color:#888;margin:-4px 0 4px;padding-left:2px"></div>
-  <div><label>LLM API Key</label><input id="cfg-LLM_API_KEY" type="password" placeholder="sk-..."></div>
+  <div><label id="cfg-label-OPENAI_BASE_URL">OpenAI Base URL</label><input id="cfg-OPENAI_BASE_URL" placeholder="https://api.openai.com/v1"></div>
+  <div><label>LLM API Key</label><span class="pwd-wrap"><input id="cfg-LLM_API_KEY" type="password" placeholder="sk-..."><button type="button" class="pwd-toggle" onclick="toggleApiKey(this)" tabindex="-1"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 11 11 0 0 1 19.876 0 1 1 0 0 1 0 .696 11 11 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg></button></span></div>
 </div>
-<div style="margin:-8px 0 12px;text-align:right"><button id="btn-test-llm" type="button" class="test-btn test-btn-idle" onclick="testLLM()">🔗 测试连接</button></div>
 
 <h3>学术搜索 API</h3>
 <div class="row">
-  <div><label>S2 API Key (可选)</label><input id="cfg-SEMANTIC_SCHOLAR_API_KEY" placeholder="留空使用公共端点"><button id="btn-test-s2" type="button" class="test-btn test-btn-idle" onclick="testS2()" style="margin-left:4px">测试 S2</button></div>
+  <div><label>S2 API Key (可选)</label><span class="pwd-wrap"><input id="cfg-SEMANTIC_SCHOLAR_API_KEY" type="password" placeholder="留空使用公共端点"><button type="button" class="pwd-toggle" onclick="toggleApiKey(this)" tabindex="-1"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 11 11 0 0 1 19.876 0 1 1 0 0 1 0 .696 11 11 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg></button></span><button id="btn-test-s2" type="button" class="test-btn test-btn-idle" onclick="testS2()" style="margin-left:4px">测试 S2</button></div>
   <div><label>OpenAlex 礼貌邮箱 (可选)</label><input id="cfg-OPENALEX_MAILTO" placeholder="your-email@example.com"><button id="btn-test-oa" type="button" class="test-btn test-btn-idle" onclick="testOA()" style="margin-left:4px">测试 OA</button></div>
 </div>
 <div class="row">
@@ -1147,28 +1252,28 @@ loadConfig();
   <div><label>DBLP（免费）</label><button id="btn-test-dblp" type="button" class="test-btn test-btn-idle" onclick="testDblp()" style="margin-left:4px">测试 DBLP</button></div>
 </div>
 
-<h3>Embedding / Reranker</h3>
+<h3>Embedding</h3>
 <div class="row">
   <div class="emb-dependent"><label>Embedding Provider</label><select id="cfg-EMBEDDING_PROVIDER"><option value="">(无)</option><option value="dashscope">DashScope</option><option value="siliconflow">SiliconFlow</option></select></div>
-  <div class="emb-dependent"><label>Embedding Model</label><input id="cfg-EMBEDDING_MODEL" placeholder="text-embedding-v4"></div>
+  <div class="emb-dependent"><label>Embedding Model</label><span class="model-test-wrap"><input id="cfg-EMBEDDING_MODEL" placeholder="text-embedding-v4"><button id="btn-test-emb" type="button" class="model-test-btn" onclick="testEmbeddingOnly()" tabindex="-1" title="测试 Embedding"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/></svg></button></span></div>
 </div>
 <div class="row">
-  <div class="emb-dependent"><label>Embedding API Key</label><input id="cfg-EMBEDDING_API_KEY" type="password" placeholder="sk-..."></div>
-  <div class="reranker-dependent"><label>Reranker Provider</label><select id="cfg-RERANKER_PROVIDER"><option value="">(无)</option><option value="dashscope">DashScope</option><option value="siliconflow">SiliconFlow</option></select></div>
-</div>
-<div class="row">
-  <div class="reranker-dependent"><label>Reranker Model</label><input id="cfg-RERANKER_MODEL" placeholder="qwen3-rerank"></div>
-  <div class="reranker-dependent"><label>Reranker API Key</label><input id="cfg-RERANKER_API_KEY" type="password" placeholder="sk-..."></div>
+  <div class="emb-dependent"><label>Embedding API Key</label><span class="pwd-wrap"><input id="cfg-EMBEDDING_API_KEY" type="password" placeholder="sk-..."><button type="button" class="pwd-toggle" onclick="toggleApiKey(this)" tabindex="-1"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 11 11 0 0 1 19.876 0 1 1 0 0 1 0 .696 11 11 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg></button></span></div>
+  <div style="display:flex;align-items:center;min-height:100%"><label style="margin-bottom:0"><input id="cfg-EMBEDDING_ENABLED" type="checkbox" onchange="onEmbeddingToggle()"> 启用 Embedding</label></div>
 </div>
 <div class="row">
   <div class="emb-dependent"><label>并发数</label><input id="cfg-EMBEDDING_CONCURRENCY" type="number" step="1"></div>
   <div class="emb-dependent"><label>RPS 限速</label><input id="cfg-EMBEDDING_RPS_LIMIT" type="number" step="1"></div>
-  <div><label>启用 Embedding</label><input id="cfg-EMBEDDING_ENABLED" type="checkbox" style="width:auto;margin:6px 0 0" onchange="onEmbeddingToggle()"></div>
-  <div><label>启用 Reranker</label><input id="cfg-RERANKER_ENABLED" type="checkbox" style="width:auto;margin:6px 0 0" onchange="onRerankerToggle()"></div>
 </div>
-<div style="margin:-8px 0 12px;text-align:right">
-  <button id="btn-test-emb" type="button" class="test-btn test-btn-idle" onclick="testEmbeddingOnly()" style="margin-right:6px">🔗 测试 Embedding</button>
-  <button id="btn-test-reranker" type="button" class="test-btn test-btn-idle" onclick="testRerankerOnly()">🔗 测试 Reranker</button>
+
+<h3>Reranker</h3>
+<div class="row">
+  <div class="reranker-dependent"><label>Reranker Provider</label><select id="cfg-RERANKER_PROVIDER"><option value="">(无)</option><option value="dashscope">DashScope</option><option value="siliconflow">SiliconFlow</option></select></div>
+  <div class="reranker-dependent"><label>Reranker Model</label><span class="model-test-wrap"><input id="cfg-RERANKER_MODEL" placeholder="qwen3-rerank"><button id="btn-test-reranker" type="button" class="model-test-btn" onclick="testRerankerOnly()" tabindex="-1" title="测试 Reranker"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/></svg></button></span></div>
+</div>
+<div class="row">
+  <div class="reranker-dependent"><label>Reranker API Key</label><span class="pwd-wrap"><input id="cfg-RERANKER_API_KEY" type="password" placeholder="sk-..."><button type="button" class="pwd-toggle" onclick="toggleApiKey(this)" tabindex="-1"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 11 11 0 0 1 19.876 0 1 1 0 0 1 0 .696 11 11 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg></button></span></div>
+  <div style="display:flex;align-items:center;min-height:100%"><label style="margin-bottom:0"><input id="cfg-RERANKER_ENABLED" type="checkbox" onchange="onRerankerToggle()"> 启用 Reranker</label></div>
 </div>
 
 <h3>粗筛 (Coarse)</h3>
@@ -1247,16 +1352,13 @@ async def test_llm(body: dict[str, Any] = Body({})) -> dict[str, Any]:
         provider = body.get("provider") or os.getenv("LLM_PROVIDER", "openai")
         api_key = body.get("api_key") or os.getenv("LLM_API_KEY", "")
         model = body.get("model") or os.getenv("LLM_MODEL") or os.getenv("LLM_FAST_MODEL") or "gpt-4o-mini"
-        base_url = body.get("base_url") or os.getenv("OPENAI_BASE_URL") or {
-            "dashscope": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-            "siliconflow": "https://api.siliconflow.cn/v1",
-            "zhipuai": "https://open.bigmodel.cn/api/paas/v4",
-        }.get(provider, "https://api.openai.com/v1")
+        from paper_search.llm import _resolve_base_url
+        base_url = body.get("base_url") or _resolve_base_url(provider)
 
         llm = ChatOpenAI(model=model, temperature=0.0, api_key=api_key, base_url=base_url)
-        resp = llm.invoke([HumanMessage(content="Respond with only: OK")])
+        resp = llm.invoke([HumanMessage(content='Hello (Please reply "Hello" directly without any extra explanations or thoughts.)')])
         msg = resp.content.strip()[:100] if hasattr(resp, "content") else str(resp)[:100]
-        return {"ok": True, "message": f"LLM 响应正常: {msg}"}
+        return {"ok": True, "message": f"{model} 连接成功: {msg}"}
     except Exception as e:
         return {"ok": False, "message": f"LLM 测试失败: {str(e)[:200]}"}
 
@@ -1289,7 +1391,7 @@ async def test_embedding(body: dict[str, Any] = Body({})) -> dict[str, Any]:
                 data = resp.json()
                 items = data.get("data", [])
                 dim = len(items[0]["embedding"]) if items else 0
-                return {"ok": True, "message": f"Embedding 正常 (SiliconFlow)，向量维度: {dim}"}
+                return {"ok": True, "message": f"{model} 连接成功 (SiliconFlow)，向量维度: {dim}"}
             err = resp.text[:200]
             return {"ok": False, "message": f"SiliconFlow Embedding 返回错误 ({resp.status_code}): {err}"}
 
@@ -1306,7 +1408,7 @@ async def test_embedding(body: dict[str, Any] = Body({})) -> dict[str, Any]:
             resp = dashscope.TextEmbedding.call(model=model, input="test query", api_key=api_key)
         if resp.status_code == HTTPStatus.OK:
             dim = len(resp.output["embeddings"][0]["embedding"])
-            return {"ok": True, "message": f"Embedding 正常 (DashScope)，向量维度: {dim}"}
+            return {"ok": True, "message": f"{model} 连接成功 (DashScope)，向量维度: {dim}"}
         detail = getattr(resp, "message", "") or ""
         code = getattr(resp, "code", "") or ""
         return {"ok": False, "message": f"Embedding 返回错误 ({resp.status_code}): {code} {detail}".strip()}
@@ -1338,7 +1440,7 @@ async def test_reranker(body: dict[str, Any] = Body({})) -> dict[str, Any]:
                 timeout=30.0,
             )
             if resp.status_code == 200:
-                return {"ok": True, "message": "Reranker API 正常 (SiliconFlow)"}
+                return {"ok": True, "message": f"{model} 连接成功 (SiliconFlow)"}
             err = resp.text[:200]
             return {"ok": False, "message": f"SiliconFlow Reranker 返回错误 ({resp.status_code}): {err}"}
 
@@ -1351,7 +1453,7 @@ async def test_reranker(body: dict[str, Any] = Body({})) -> dict[str, Any]:
             top_n=1, return_documents=False, api_key=api_key,
         )
         if resp.status_code == HTTPStatus.OK:
-            return {"ok": True, "message": "Reranker API 正常 (DashScope)"}
+            return {"ok": True, "message": f"{model} 连接成功 (DashScope)"}
         return {"ok": False, "message": f"Reranker 返回错误: {resp.status_code} - {resp.message}"}
     except Exception as e:
         return {"ok": False, "message": f"Reranker 测试失败: {str(e)[:200]}"}

@@ -68,9 +68,10 @@ def _resolve_api_key(provider: str) -> str | None:
 
 
 def _resolve_base_url(provider: str) -> str:
-    base = os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_API_BASE")
-    if base:
-        return base
+    # OPENAI_BASE_URL only applies to the openai provider.
+    # DashScope / SiliconFlow / ZhipuAI use hardcoded default endpoints.
+    if provider == "openai":
+        return os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1"
     _DEFAULTS = {
         "dashscope": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "siliconflow": "https://api.siliconflow.cn/v1",

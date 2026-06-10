@@ -147,8 +147,10 @@ def _build_schema_from_partial(data: dict[str, object], query: str) -> QueryPlan
         core = list(sq_raw.get("core_concepts", [query]))
         methods = list(sq_raw.get("methodologies", ["academic search"]))
     else:
-        core = [query]
-        methods = ["academic search"]
+        # LLM may output core_concepts / methodologies at top level
+        # (prompt uses raw invoke, not with_structured_output)
+        core = _extract_list(data, "core_concepts") or [query]
+        methods = _extract_list(data, "methodologies") or ["academic search"]
     # Pad core_concepts to at least 3, methodologies to at least 2
     while len(core) < 3:
         core.append(core[0] if core else query)
@@ -211,6 +213,14 @@ def _build_schema_from_partial(data: dict[str, object], query: str) -> QueryPlan
         api_payload_translation=api_payload_translation,
         query_expansion_policy=query_expansion_policy,
     )
+
+
+def _extract_list(data: dict[str, object], key: str) -> list[str] | None:
+    """Extract a list of strings from *data* at *key*, returning None if missing."""
+    val = data.get(key)
+    if isinstance(val, list):
+        return [str(v) for v in val if v]
+    return None
 
 
 def _build_fallback_query_plan(query: str) -> QueryPlanSchema:
