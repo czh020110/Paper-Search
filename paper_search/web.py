@@ -787,7 +787,11 @@ function openConfig() {
     else el.value = realVal;
   }
   ov.classList.add('show');
-  onLLMProviderChange();
+  // 防止 onLLMProviderChange 用硬编码默认值覆盖 .env 配置
+	_userEdited.add('cfg-LLM_MODEL');
+	_userEdited.add('cfg-LLM_FAST_MODEL');
+	_userEdited.add('cfg-OPENAI_BASE_URL');
+	onLLMProviderChange();
   _renderHelpIcons();
   updateEmbDependent();
   updateRerankerDependent();
