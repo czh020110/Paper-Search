@@ -196,7 +196,7 @@ def _config_schema() -> dict[str, dict[str, Any]]:
         "LLM_PROVIDER": {"type": "select", "default": "openai", "options": ["openai", "dashscope", "siliconflow", "zhipuai"]},
         "LLM_MODEL": {"type": "string", "default": "gpt-4o-mini"},
         "LLM_FAST_MODEL": {"type": "string", "default": "gpt-4o-mini"},
-        "OPENAI_BASE_URL": {"type": "string", "default": "https://api.openai.com/v1"},
+        "BASE_URL": {"type": "string", "default": "https://api.openai.com/v1"},
         "LLM_API_KEY": {"type": "string", "default": ""},
         "LLM_THINKING": {"type": "select", "default": "none", "options": ["off", "none", "minimal", "low", "medium", "high", "xhigh"]},
         "SEMANTIC_SCHOLAR_API_KEY": {"type": "string", "default": ""},
@@ -258,7 +258,7 @@ _CONFIG_HELP: dict[str, str] = {
     "LLM_PROVIDER": "LLM 提供商。openai/dashscope/siliconflow/zhipuai，切换后自动填充 Base URL 和推荐模型。",
     "LLM_MODEL": "LLM 模型名称，用于查询理解和精筛。示例：qwen3.6-plus / gpt-4o-mini",
     "LLM_FAST_MODEL": "轻量 LLM 模型，用于快速任务。不配置则回退到 LLM_MODEL。示例：qwen3.6-flash-nothinking",
-    "OPENAI_BASE_URL": "OpenAI 兼容 API 端点 URL。留空默认使用 OpenAI 官方节点 (https://api.openai.com/v1)。示例：https://api.openai.com/v1",
+    "BASE_URL": "LLM API 端点 URL，按当前选择的 LLM_PROVIDER 自动切换默认值。也可手动自定义。示例：https://api.openai.com/v1",
     "LLM_API_KEY": "LLM API 认证密钥。示例：sk-...",
     "LLM_THINKING": "控制 LLM 思考/推理深度。none=关闭，off=不传参(API默认)，minimal~xhigh=递增推理强度。DashScope 仅支持开/关。",
     "SEMANTIC_SCHOLAR_API_KEY": "S2 API Key（可选）。有 key 可提升速率限制，留空使用公共端点。示例：40字符字符串",
@@ -465,6 +465,12 @@ _SEARCH_PAGE_HTML = """<!DOCTYPE html>
   /* Embedding disabled state */
   .emb-disabled { opacity: 0.4; pointer-events: none; }
   .reranker-disabled { opacity: 0.4; pointer-events: none; }
+	  /* Password toggle button */
+	  .pwd-wrap { position: relative; display: flex; align-items: center; }
+	  .pwd-wrap input { width: 100%; padding-right: 32px; box-sizing: border-box; }
+	  .pwd-toggle { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; padding: 2px; color: #999; display: flex; align-items: center; }
+	  .pwd-toggle:hover { color: #555; background: rgba(0,0,0,0.06); border-radius: 4px; }
+	  .pwd-toggle svg { width: 18px; height: 18px; }
 </style>
 </head>
 <body>
@@ -475,7 +481,7 @@ _SEARCH_PAGE_HTML = """<!DOCTYPE html>
 调用 <b>LLM_FAST_MODEL</b> 将自然语言转为结构化 QueryPlan JSON。<br>
 使用 <b>with_structured_output</b> + Pydantic 强制输出 schema。<br>
 思考程度由 <b>LLM_THINKING</b> 控制。<br>
-API: <b>LLM_PROVIDER</b> → <b>OPENAI_BASE_URL</b><br>
+API: <b>LLM_PROVIDER</b> → <b>BASE_URL</b><br>
 输出: query_type, hard_filters, ranking_signals, semantic_queries, sub_queries_for_retrieval, api_payload_translation<br><br>
 
 <b>📡 多源检索</b><br>
@@ -759,6 +765,10 @@ function _isDirty() {
 
 function _markDirty() { configDirty = true; }
 
+const EYE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 11 11 0 0 1 19.876 0 1 1 0 0 1 0 .696 11 11 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.733 5.076A10.744 10.744 0 0 1 12 5c5 0 9.27 3.11 11 8-1.17 3.31-3.37 5.73-6.12 7.03"/><path d="M14.12 14.121A3 3 0 1 1 9.88 9.88"/><path d="M1 1l22 22"/><path d="M4.22 4.22A11 11 0 0 0 2 12c1.17 3.31 3.37 5.73 6.12 7.03A11.85 11.85 0 0 0 12 20c2.01 0 3.89-.53 5.5-1.47"/></svg>';
+function toggleApiKey(btn) { var inp = btn.parentElement.querySelector("input"); if (inp.type === "password") { inp.type = "text"; btn.innerHTML = EYE_OFF_SVG; } else { inp.type = "password"; btn.innerHTML = EYE_SVG; } }
+
 function openConfig() {
   const ov = document.getElementById('config-overlay');
   // Bind dirty listener on first open (form exists by now)
@@ -769,7 +779,7 @@ function openConfig() {
     form.dataset.listenerBound = '1';
   }
   // Track manual edits on LLM model/base_url fields
-  ['cfg-OPENAI_BASE_URL', 'cfg-LLM_MODEL', 'cfg-LLM_FAST_MODEL'].forEach(function(id) {
+  ['cfg-BASE_URL', 'cfg-LLM_MODEL', 'cfg-LLM_FAST_MODEL'].forEach(function(id) {
     const el = document.getElementById(id);
     if (el && !el.dataset.editBound) {
       el.addEventListener('input', _markEdited);
@@ -790,7 +800,7 @@ function openConfig() {
   // 防止 onLLMProviderChange 用硬编码默认值覆盖 .env 配置
 	_userEdited.add('cfg-LLM_MODEL');
 	_userEdited.add('cfg-LLM_FAST_MODEL');
-	_userEdited.add('cfg-OPENAI_BASE_URL');
+	_userEdited.add('cfg-BASE_URL');
 	onLLMProviderChange();
   _renderHelpIcons();
   updateEmbDependent();
@@ -889,7 +899,7 @@ function testLLM() {
     provider: _getFormValue('LLM_PROVIDER'),
     api_key: _getFormValue('LLM_API_KEY'),
     model: _getFormValue('LLM_MODEL'),
-    base_url: _getFormValue('OPENAI_BASE_URL'),
+    base_url: _getFormValue('BASE_URL'),
   });
 }
 
@@ -1040,7 +1050,7 @@ function onLLMProviderChange() {
 
   // Auto-fill fields only if user hasn't manually edited them
   const pairs = [
-    ['cfg-OPENAI_BASE_URL', defaults.base_url],
+    ['cfg-BASE_URL', defaults.base_url],
     ['cfg-LLM_MODEL', defaults.model],
     ['cfg-LLM_FAST_MODEL', defaults.fast_model],
   ];
@@ -1134,16 +1144,16 @@ loadConfig();
   <div><label>LLM Model</label><input id="cfg-LLM_MODEL" placeholder="gpt-4o-mini"></div>
   <div><label>LLM Fast Model</label><input id="cfg-LLM_FAST_MODEL" placeholder="gpt-4o-mini"></div>
 </div>
+  <div id="llm-free-hint" style="display:none;font-size:11px;color:#888;margin:-8px 0 8px;padding-left:2px"></div>
 <div class="row">
-  <div><label>OpenAI Base URL</label><input id="cfg-OPENAI_BASE_URL" placeholder="https://api.openai.com/v1"></div>
-  <div id="llm-free-hint" style="display:none;grid-column:1/-1;font-size:11px;color:#888;margin:-4px 0 4px;padding-left:2px"></div>
-  <div><label>LLM API Key</label><input id="cfg-LLM_API_KEY" type="password" placeholder="sk-..."></div>
+  <div><label>Base URL</label><input id="cfg-BASE_URL" placeholder="https://api.openai.com/v1"></div>
+  <div><label>LLM API Key</label><span class="pwd-wrap"><input id="cfg-LLM_API_KEY" type="password" placeholder="sk-..."><button type="button" class="pwd-toggle" onclick="toggleApiKey(this)" tabindex="-1"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 11 11 0 0 1 19.876 0 1 1 0 0 1 0 .696 11 11 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg></button></span></div>
 </div>
 <div style="margin:-8px 0 12px;text-align:right"><button id="btn-test-llm" type="button" class="test-btn test-btn-idle" onclick="testLLM()">🔗 测试连接</button></div>
 
 <h3>学术搜索 API</h3>
 <div class="row">
-  <div><label>S2 API Key (可选)</label><input id="cfg-SEMANTIC_SCHOLAR_API_KEY" placeholder="留空使用公共端点"><button id="btn-test-s2" type="button" class="test-btn test-btn-idle" onclick="testS2()" style="margin-left:4px">测试 S2</button></div>
+  <div><label>S2 API Key (可选)</label><span class="pwd-wrap"><input id="cfg-SEMANTIC_SCHOLAR_API_KEY" type="password" placeholder="留空使用公共端点"><button type="button" class="pwd-toggle" onclick="toggleApiKey(this)" tabindex="-1"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 11 11 0 0 1 19.876 0 1 1 0 0 1 0 .696 11 11 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg></button></span><button id="btn-test-s2" type="button" class="test-btn test-btn-idle" onclick="testS2()" style="margin-left:4px">测试 S2</button></div>
   <div><label>OpenAlex 礼貌邮箱 (可选)</label><input id="cfg-OPENALEX_MAILTO" placeholder="your-email@example.com"><button id="btn-test-oa" type="button" class="test-btn test-btn-idle" onclick="testOA()" style="margin-left:4px">测试 OA</button></div>
 </div>
 <div class="row">
@@ -1157,22 +1167,18 @@ loadConfig();
   <div class="emb-dependent"><label>Embedding Model</label><input id="cfg-EMBEDDING_MODEL" placeholder="text-embedding-v4"></div>
 </div>
 <div class="row">
-  <div class="emb-dependent"><label>Embedding API Key</label><input id="cfg-EMBEDDING_API_KEY" type="password" placeholder="sk-..."></div>
+  <div class="emb-dependent"><label>Embedding API Key</label><span class="pwd-wrap"><input id="cfg-EMBEDDING_API_KEY" type="password" placeholder="sk-..."><button type="button" class="pwd-toggle" onclick="toggleApiKey(this)" tabindex="-1"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 11 11 0 0 1 19.876 0 1 1 0 0 1 0 .696 11 11 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg></button></span></div>
   <div class="reranker-dependent"><label>Reranker Provider</label><select id="cfg-RERANKER_PROVIDER"><option value="">(无)</option><option value="dashscope">DashScope</option><option value="siliconflow">SiliconFlow</option></select></div>
 </div>
 <div class="row">
   <div class="reranker-dependent"><label>Reranker Model</label><input id="cfg-RERANKER_MODEL" placeholder="qwen3-rerank"></div>
-  <div class="reranker-dependent"><label>Reranker API Key</label><input id="cfg-RERANKER_API_KEY" type="password" placeholder="sk-..."></div>
+  <div class="reranker-dependent"><label>Reranker API Key</label><span class="pwd-wrap"><input id="cfg-RERANKER_API_KEY" type="password" placeholder="sk-..."><button type="button" class="pwd-toggle" onclick="toggleApiKey(this)" tabindex="-1"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 11 11 0 0 1 19.876 0 1 1 0 0 1 0 .696 11 11 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg></button></span></div>
 </div>
 <div class="row">
   <div class="emb-dependent"><label>并发数</label><input id="cfg-EMBEDDING_CONCURRENCY" type="number" step="1"></div>
   <div class="emb-dependent"><label>RPS 限速</label><input id="cfg-EMBEDDING_RPS_LIMIT" type="number" step="1"></div>
-  <div><label>启用 Embedding</label><input id="cfg-EMBEDDING_ENABLED" type="checkbox" style="width:auto;margin:6px 0 0" onchange="onEmbeddingToggle()"></div>
-  <div><label>启用 Reranker</label><input id="cfg-RERANKER_ENABLED" type="checkbox" style="width:auto;margin:6px 0 0" onchange="onRerankerToggle()"></div>
-</div>
-<div style="margin:-8px 0 12px;text-align:right">
-  <button id="btn-test-emb" type="button" class="test-btn test-btn-idle" onclick="testEmbeddingOnly()" style="margin-right:6px">🔗 测试 Embedding</button>
-  <button id="btn-test-reranker" type="button" class="test-btn test-btn-idle" onclick="testRerankerOnly()">🔗 测试 Reranker</button>
+  <div><label>启用 Embedding</label><input id="cfg-EMBEDDING_ENABLED" type="checkbox" style="width:auto;margin:6px 0 0" onchange="onEmbeddingToggle()"><button id="btn-test-emb" type="button" class="test-btn test-btn-idle" onclick="testEmbeddingOnly()" style="margin-left:6px">测试 Embedding</button></div>
+  <div><label>启用 Reranker</label><input id="cfg-RERANKER_ENABLED" type="checkbox" style="width:auto;margin:6px 0 0" onchange="onRerankerToggle()"><button id="btn-test-reranker" type="button" class="test-btn test-btn-idle" onclick="testRerankerOnly()" style="margin-left:6px">测试 Reranker</button></div>
 </div>
 
 <h3>粗筛 (Coarse)</h3>
@@ -1251,7 +1257,7 @@ async def test_llm(body: dict[str, Any] = Body({})) -> dict[str, Any]:
         provider = body.get("provider") or os.getenv("LLM_PROVIDER", "openai")
         api_key = body.get("api_key") or os.getenv("LLM_API_KEY", "")
         model = body.get("model") or os.getenv("LLM_MODEL") or os.getenv("LLM_FAST_MODEL") or "gpt-4o-mini"
-        base_url = body.get("base_url") or os.getenv("OPENAI_BASE_URL") or {
+        base_url = body.get("base_url") or os.getenv("BASE_URL") or {
             "dashscope": "https://dashscope.aliyuncs.com/compatible-mode/v1",
             "siliconflow": "https://api.siliconflow.cn/v1",
             "zhipuai": "https://open.bigmodel.cn/api/paas/v4",

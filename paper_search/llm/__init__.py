@@ -68,7 +68,7 @@ def _resolve_api_key(provider: str) -> str | None:
 
 
 def _resolve_base_url(provider: str) -> str:
-    base = os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_API_BASE")
+    base = os.getenv("BASE_URL") or os.getenv("LLM_API_BASE")
     if base:
         return base
     _DEFAULTS = {
