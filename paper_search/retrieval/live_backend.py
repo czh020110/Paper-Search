@@ -75,13 +75,31 @@ def retrieve_live_papers(query_plan: QueryPlan, cache: CacheStore | None = None,
             for query in english_queries:
                 oa_callables.append(lambda q=query, y=year_from: search_works(query=q, year_from=y, per_page=25, cache=cache))
 
-    # arXiv and DBLP: use LLM-translated sub_queries directly (same as S2/OA)
+    # arXiv: use LLM-translated sub_queries directly (same as S2/OA)
     if not arxiv_callables:
         for query in (query_plan.sub_queries_for_retrieval or [query_plan.original_query]):
             arxiv_callables.append(lambda q=query: search_arxiv(query=q, max_results=20))
+    # DBLP: title-based exact match — use short keywords (≤3 words) from core_concepts
+    # Long sentence queries ("LLM jailbreak attack methods 2026") return 0 hits.
     if not dblp_callables:
-        for query in (query_plan.sub_queries_for_retrieval or [query_plan.original_query]):
-            dblp_callables.append(lambda q=query: search_dblp(query=q, max_results=20))
+        core = query_plan.semantic_queries.get("core_concepts", [])
+        short_kw: list[str] = []
+        for kw in core:
+            wc = len(kw.split())
+            if wc <= 3 and kw not in short_kw:
+                short_kw.append(kw)
+        if not short_kw:
+            # Fallback: tokenize sub_queries into 1-2 word pairs
+            for sq in (query_plan.sub_queries_for_retrieval or []):
+                tokens = sq.split()[:4]  # first 4 words → up to 2 bigrams
+                for i in range(len(tokens) - 1):
+                    pair = f"{tokens[i]} {tokens[i + 1]}"
+                    if pair not in short_kw:
+                        short_kw.append(pair)
+                if len(short_kw) >= 5:
+                    break
+        for kw in short_kw[:5]:  # limit to 5 queries for rate-limited free API
+            dblp_callables.append(lambda q=kw: search_dblp(query=q, max_results=20))
 
     all_papers: list[Paper] = []
 
