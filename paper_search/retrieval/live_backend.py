@@ -18,8 +18,8 @@ from .semantic_scholar import search_papers, search_papers_by_title
 logger = logging.getLogger(__name__)
 
 S2_DELAY_SECONDS = 1.0
-# Free public APIs rate-limit aggressive concurrent requests — sequential with delay.
-ARXIV_DELAY_SECONDS = 0.5
+# DBLP has no API key and strict rate-limiting (HTTP 429) — must run sequentially with delay.
+# arXiv can handle moderate concurrency (5 queries tested OK), so runs in parallel.
 DBLP_DELAY_SECONDS = 1.0
 
 # Chinese tokens that should be stripped from API queries (APIs index English papers)
@@ -89,49 +89,34 @@ def retrieve_live_papers(query_plan: QueryPlan, cache: CacheStore | None = None,
     # with a key it rises to ~100 rps → we can fan out in parallel.
     has_s2_key = bool(os.getenv("SEMANTIC_SCHOLAR_API_KEY"))
 
-    def _run_s2_one(fn: Callable[[], list[Paper]], idx: int) -> list[Paper]:
-        if budget and not budget.can_call_api():
-            logger.info("S2 skipped task %d/%d (budget exhausted)", idx + 1, len(s2_callables))
-            return []
-        try:
-            result = fn()
-            if isinstance(result, list):
-                if budget:
-                    budget.increment_api_calls()
-                logger.info("S2 retrieved %d papers (task %d/%d)", len(result), idx + 1, len(s2_callables))
-                return result
-        except Exception:
-            logger.warning("S2 task %d/%d failed", idx + 1, len(s2_callables), exc_info=True)
-        return []
-
     # Submit S2 + OA + arXiv + DBLP tasks into the same thread-pool.
     max_workers = max(4, len(s2_callables) + len(oa_callables) + len(arxiv_callables) + len(dblp_callables))
     if not has_s2_key:
         # No S2 key → run S2 sequentially in one thread to stay under 1 rps.
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             s2_future = executor.submit(_run_s2_sequential, s2_callables, budget, has_s2_key) if s2_callables else None
-            oa_futures = {executor.submit(fn): fn for fn in oa_callables}
-            ax_future = executor.submit(_run_free_api_sequential, arxiv_callables, "arXiv", len(arxiv_callables), ARXIV_DELAY_SECONDS, budget) if arxiv_callables else None
+            oa_futures = [executor.submit(fn) for fn in oa_callables]
+            ax_futures = [executor.submit(fn) for fn in arxiv_callables]
             db_future = executor.submit(_run_free_api_sequential, dblp_callables, "DBLP", len(dblp_callables), DBLP_DELAY_SECONDS, budget) if dblp_callables else None
             if s2_future:
                 s2_result = s2_future.result()
                 if isinstance(s2_result, list):
                     all_papers.extend(s2_result)
-            for result_future in [ax_future, db_future]:
-                if result_future:
-                    try:
-                        r = result_future.result()
-                        if isinstance(r, list):
-                            all_papers.extend(r)
-                    except Exception:
-                        pass
-            for future in as_completed(oa_futures):
+            if db_future:
                 try:
-                    result = future.result()
-                    if isinstance(result, list):
-                        all_papers.extend(result)
+                    r = db_future.result()
+                    if isinstance(r, list):
+                        all_papers.extend(r)
                 except Exception:
                     pass
+            for futures_list in (oa_futures, ax_futures):
+                for future in as_completed(futures_list):
+                    try:
+                        result = future.result()
+                        if isinstance(result, list):
+                            all_papers.extend(result)
+                    except Exception:
+                        pass
     else:
         # S2 key available → all tasks run in parallel.
         def _call_one(fn: Callable[[], list[Paper]], label: str, idx: int, total: int) -> list[Paper]:
@@ -157,8 +142,8 @@ def retrieve_live_papers(query_plan: QueryPlan, cache: CacheStore | None = None,
                 futures[executor.submit(_call_one, fn, "S2", i, s2_total)] = None
             for i, fn in enumerate(oa_callables):
                 futures[executor.submit(_call_one, fn, "OA", i, oa_total)] = None
-            if arxiv_callables:
-                futures[executor.submit(_run_free_api_sequential, arxiv_callables, "arXiv", len(arxiv_callables), ARXIV_DELAY_SECONDS, budget)] = None
+            for i, fn in enumerate(arxiv_callables):
+                futures[executor.submit(_call_one, fn, "arXiv", i, len(arxiv_callables))] = None
             if dblp_callables:
                 futures[executor.submit(_run_free_api_sequential, dblp_callables, "DBLP", len(dblp_callables), DBLP_DELAY_SECONDS, budget)] = None
             for future in as_completed(futures):
@@ -301,7 +286,7 @@ def _parse_year_from_filter(filter_str: str | None) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def _build_edges(papers: list[Paper]) -> list[dict[str, Any]]:
+def _build_edges(_papers: list[Paper]) -> list[dict[str, Any]]:
     # Citation edges will be populated during the snowball phase (S-005).
     # The initial retrieval stage only produces seed papers; edges are built
     # when references/citations are fetched and filtered for relevance.

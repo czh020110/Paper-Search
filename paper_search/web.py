@@ -119,7 +119,6 @@ async def api_search_stream(q: str = Query(..., description="自然语言查询"
     """Stream pipeline progress as Server-Sent Events."""
     import asyncio as _asyncio
     import queue as _sync_queue
-    from concurrent.futures import ThreadPoolExecutor
 
     msg_queue: _sync_queue.Queue[dict[str, str]] = _sync_queue.Queue()
 
@@ -320,14 +319,6 @@ def _collect_config() -> dict[str, Any]:
         result[key] = entry
     result["_validate"] = validate
     return result
-
-
-def _env_path() -> Path:
-    """Return .env.local path (local-only, not committed); fallback to .env."""
-    local = Path.cwd() / ".env.local"
-    if local.is_file():
-        return local
-    return Path.cwd() / ".env"
 
 
 def _write_env(updates: dict[str, str]) -> None:
@@ -1355,9 +1346,10 @@ async def test_llm(body: dict[str, Any] = Body({})) -> dict[str, Any]:
         from paper_search.llm import _resolve_base_url
         base_url = body.get("base_url") or _resolve_base_url(provider)
 
-        llm = ChatOpenAI(model=model, temperature=0.0, api_key=api_key, base_url=base_url)
+        llm = ChatOpenAI(model=model, temperature=0.0, api_key=api_key, base_url=base_url)  # type: ignore[arg-type]
         resp = llm.invoke([HumanMessage(content='Hello (Please reply "Hello" directly without any extra explanations or thoughts.)')])
-        msg = resp.content.strip()[:100] if hasattr(resp, "content") else str(resp)[:100]
+        content: str = resp.content if isinstance(resp.content, str) else str(resp.content)
+        msg = content.strip()[:100]
         return {"ok": True, "message": f"{model} 连接成功: {msg}"}
     except Exception as e:
         return {"ok": False, "message": f"LLM 测试失败: {str(e)[:200]}"}
@@ -1402,7 +1394,7 @@ async def test_embedding(body: dict[str, Any] = Body({})) -> dict[str, Any]:
         # 多模态模型走 MultiModalEmbedding，纯文本走 TextEmbedding
         if model.startswith("tongyi-"):
             resp = dashscope.MultiModalEmbedding.call(
-                model=model, input=[{"text": "test query"}], api_key=api_key,
+                model=model, input=[{"text": "test query"}], api_key=api_key,  # type: ignore[call-arg]
             )
         else:
             resp = dashscope.TextEmbedding.call(model=model, input="test query", api_key=api_key)
