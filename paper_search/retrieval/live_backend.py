@@ -72,14 +72,12 @@ def retrieve_live_papers(query_plan: QueryPlan, cache: CacheStore | None = None,
             for query in english_queries:
                 oa_callables.append(lambda q=query, y=year_from: search_works(query=q, year_from=y, per_page=25, cache=cache))
 
-    # arXiv and DBLP: always add parallel searches (free APIs, no key needed)
+    # arXiv and DBLP: use LLM-translated sub_queries directly (same as S2/OA)
     if not arxiv_callables:
-        eq = _build_english_queries(query_plan)
-        for query in (eq or query_plan.sub_queries_for_retrieval):
+        for query in (query_plan.sub_queries_for_retrieval or [query_plan.original_query]):
             arxiv_callables.append(lambda q=query: search_arxiv(query=q, max_results=20))
     if not dblp_callables:
-        eq = _build_english_queries(query_plan)
-        for query in (eq or query_plan.sub_queries_for_retrieval):
+        for query in (query_plan.sub_queries_for_retrieval or [query_plan.original_query]):
             dblp_callables.append(lambda q=query: search_dblp(query=q, max_results=20))
 
     all_papers: list[Paper] = []
@@ -198,20 +196,19 @@ def _build_english_queries(query_plan: QueryPlan) -> list[str]:
     english_core = [t for t in core if not _CJK_PATTERN.search(t)]
     english_methods = [t for t in methods if not _CJK_PATTERN.search(t)]
 
-    if not english_core and not english_methods:
-        # Fallback: strip CJK from sub_queries
+    if not english_core:
+        # Fallback: strip CJK from sub_queries — methods alone produce garbage queries
         return [_strip_cjk(q) for q in query_plan.sub_queries_for_retrieval if _strip_cjk(q)]
 
     # Build query variants from English tokens, deduplicating tokens first
     queries: list[str] = []
 
     # Variant 1: core concepts (deduplicated)
-    if english_core:
-        unique_core = list(dict.fromkeys(english_core))[:6]
-        queries.append(" ".join(unique_core))
+    unique_core = list(dict.fromkeys(english_core))[:6]
+    queries.append(" ".join(unique_core))
 
     # Variant 2: core + methods (deduplicated, interleaved)
-    if english_core and english_methods:
+    if english_methods:
         combined = list(dict.fromkeys(english_core[:4] + english_methods[:2]))[:6]
         queries.append(" ".join(combined))
 
