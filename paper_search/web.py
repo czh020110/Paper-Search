@@ -207,6 +207,10 @@ def _config_schema() -> dict[str, dict[str, Any]]:
         "LLM_THINKING": {"type": "select", "default": "none", "options": ["off", "none", "minimal", "low", "medium", "high", "xhigh"]},
         "SEMANTIC_SCHOLAR_API_KEY": {"type": "string", "default": ""},
         "OPENALEX_MAILTO": {"type": "string", "default": ""},
+        "SEARCH_SOURCE_S2": {"type": "bool", "default": "true"},
+        "SEARCH_SOURCE_OA": {"type": "bool", "default": "true"},
+        "SEARCH_SOURCE_ARXIV": {"type": "bool", "default": "true"},
+        "SEARCH_SOURCE_DBLP": {"type": "bool", "default": "true"},
         "EMBEDDING_PROVIDER": {"type": "select", "default": "", "options": ["", "dashscope", "siliconflow"]},
         "EMBEDDING_MODEL": {"type": "string", "default": "text-embedding-v4"},
         "EMBEDDING_API_KEY": {"type": "string", "default": ""},
@@ -1186,7 +1190,8 @@ function _renderHelpIcons() {
     // Remove any existing icon for this field
     var existing = label.querySelector('.help-icon');
     if (existing) existing.remove();
-    // Create new icon with tooltip
+    // Create new icon with tooltip (skip if no help text)
+    if (!cv.help) return;
     var icon = document.createElement('span');
     icon.className = 'help-icon';
     if (isRightCol) icon.classList.add('help-icon-right');
@@ -1243,6 +1248,14 @@ loadConfig();
 <div class="row">
   <div><label>arXiv（免费）</label><button id="btn-test-arxiv" type="button" class="test-btn test-btn-idle" onclick="testArxiv()" style="margin-left:4px">测试 arXiv</button></div>
   <div><label>DBLP（免费）</label><button id="btn-test-dblp" type="button" class="test-btn test-btn-idle" onclick="testDblp()" style="margin-left:4px">测试 DBLP</button></div>
+</div>
+<div class="row">
+  <div style="display:flex;align-items:center;gap:16px">
+    <label style="margin-bottom:0;display:flex;align-items:center;gap:4px;white-space:nowrap"><input id="cfg-SEARCH_SOURCE_S2" type="checkbox"> Semantic Scholar</label>
+    <label style="margin-bottom:0;display:flex;align-items:center;gap:4px;white-space:nowrap"><input id="cfg-SEARCH_SOURCE_OA" type="checkbox"> OpenAlex</label>
+    <label style="margin-bottom:0;display:flex;align-items:center;gap:4px;white-space:nowrap"><input id="cfg-SEARCH_SOURCE_ARXIV" type="checkbox"> arXiv</label>
+    <label style="margin-bottom:0;display:flex;align-items:center;gap:4px;white-space:nowrap"><input id="cfg-SEARCH_SOURCE_DBLP" type="checkbox"> DBLP</label>
+  </div>
 </div>
 
 <h3>Embedding</h3>

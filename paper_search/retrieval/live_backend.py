@@ -26,6 +26,11 @@ DBLP_DELAY_SECONDS = 1.0
 _CJK_PATTERN = re.compile(r"[一-鿿㐀-䶿]+")
 
 
+def _is_source_enabled(name: str) -> bool:
+    """Check if a search source is enabled via env var. Default: true."""
+    return os.getenv(name, "true").lower() not in ("0", "false", "no")
+
+
 def retrieve_live_papers(query_plan: QueryPlan, cache: CacheStore | None = None, budget: BudgetController | None = None) -> tuple[list[Paper], list[dict[str, Any]]]:
     query_type = query_plan.intent_analysis.query_type
 
@@ -38,50 +43,55 @@ def retrieve_live_papers(query_plan: QueryPlan, cache: CacheStore | None = None,
 
     if query_type == "navigational":
         for sub_query in query_plan.sub_queries_for_retrieval:
-            s2_callables.append(lambda q=sub_query: search_papers_by_title(title=q, limit=10, cache=cache))
-            oa_callables.append(lambda q=sub_query: search_works_by_title(title=q, per_page=10, cache=cache))
-            arxiv_callables.append(lambda q=sub_query: search_arxiv_by_title(title=q, max_results=5))
-            dblp_callables.append(lambda q=sub_query: search_dblp_by_title(title=q, max_results=5))
+            if _is_source_enabled("SEARCH_SOURCE_S2"):
+                s2_callables.append(lambda q=sub_query: search_papers_by_title(title=q, limit=10, cache=cache))
+            if _is_source_enabled("SEARCH_SOURCE_OA"):
+                oa_callables.append(lambda q=sub_query: search_works_by_title(title=q, per_page=10, cache=cache))
+            if _is_source_enabled("SEARCH_SOURCE_ARXIV"):
+                arxiv_callables.append(lambda q=sub_query: search_arxiv_by_title(title=q, max_results=5))
+            if _is_source_enabled("SEARCH_SOURCE_DBLP"):
+                dblp_callables.append(lambda q=sub_query: search_dblp_by_title(title=q, max_results=5))
     else:
         # Prefer api_payload_translation when available, but strip CJK from query text
         # since S2/OA are English-focused APIs that return poor results for Chinese queries
-        s2_payloads = query_plan.api_payload_translation.get("semantic_scholar", [])
-        oa_payloads = query_plan.api_payload_translation.get("openalex", [])
-
-        if s2_payloads:
-            for entry in s2_payloads:
-                q_raw = entry.get("query", "")
-                q = _strip_cjk(q_raw)
-                if not q or not _has_alpha(q):
-                    continue
-                y = _parse_year(entry.get("year"))
-                s2_callables.append(lambda q=q, y=y: search_papers(query=q, year_from=y, limit=20, cache=cache))
-        if oa_payloads:
-            for entry in oa_payloads:
-                q_raw = entry.get("search", "")
-                q = _strip_cjk(q_raw)
-                if not q or not _has_alpha(q):
-                    continue
-                y = _parse_year_from_filter(entry.get("filter"))
-                oa_callables.append(lambda q=q, y=y: search_works(query=q, year_from=y, per_page=25, cache=cache))
+        if _is_source_enabled("SEARCH_SOURCE_S2"):
+            s2_payloads = query_plan.api_payload_translation.get("semantic_scholar", [])
+            if s2_payloads:
+                for entry in s2_payloads:
+                    q_raw = entry.get("query", "")
+                    q = _strip_cjk(q_raw)
+                    if not q or not _has_alpha(q):
+                        continue
+                    y = _parse_year(entry.get("year"))
+                    s2_callables.append(lambda q=q, y=y: search_papers(query=q, year_from=y, limit=20, cache=cache))
+        if _is_source_enabled("SEARCH_SOURCE_OA"):
+            oa_payloads = query_plan.api_payload_translation.get("openalex", [])
+            if oa_payloads:
+                for entry in oa_payloads:
+                    q_raw = entry.get("search", "")
+                    q = _strip_cjk(q_raw)
+                    if not q or not _has_alpha(q):
+                        continue
+                    y = _parse_year_from_filter(entry.get("filter"))
+                    oa_callables.append(lambda q=q, y=y: search_works(query=q, year_from=y, per_page=25, cache=cache))
 
         # Fallback: build English queries from semantic_queries when api_payload_translation is empty
-        if not s2_callables:
+        if _is_source_enabled("SEARCH_SOURCE_S2") and not s2_callables:
             english_queries = _build_english_queries(query_plan)
             for query in english_queries:
                 s2_callables.append(lambda q=query, y=year_from: search_papers(query=q, year_from=y, limit=20, cache=cache))
-        if not oa_callables:
+        if _is_source_enabled("SEARCH_SOURCE_OA") and not oa_callables:
             english_queries = _build_english_queries(query_plan)
             for query in english_queries:
                 oa_callables.append(lambda q=query, y=year_from: search_works(query=q, year_from=y, per_page=25, cache=cache))
 
     # arXiv: use LLM-translated sub_queries directly (same as S2/OA)
-    if not arxiv_callables:
+    if _is_source_enabled("SEARCH_SOURCE_ARXIV") and not arxiv_callables:
         for query in (query_plan.sub_queries_for_retrieval or [query_plan.original_query]):
             arxiv_callables.append(lambda q=query: search_arxiv(query=q, max_results=20))
     # DBLP: title-based exact match — use short keywords (≤3 words) from core_concepts
     # Long sentence queries ("LLM jailbreak attack methods 2026") return 0 hits.
-    if not dblp_callables:
+    if _is_source_enabled("SEARCH_SOURCE_DBLP") and not dblp_callables:
         core = query_plan.semantic_queries.get("core_concepts", [])
         short_kw: list[str] = []
         for kw in core:
