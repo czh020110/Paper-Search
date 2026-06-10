@@ -18,6 +18,9 @@ from .semantic_scholar import search_papers, search_papers_by_title
 logger = logging.getLogger(__name__)
 
 S2_DELAY_SECONDS = 1.0
+# Free public APIs rate-limit aggressive concurrent requests — sequential with delay.
+ARXIV_DELAY_SECONDS = 0.5
+DBLP_DELAY_SECONDS = 1.0
 
 # Chinese tokens that should be stripped from API queries (APIs index English papers)
 _CJK_PATTERN = re.compile(r"[一-鿿㐀-䶿]+")
@@ -108,20 +111,27 @@ def retrieve_live_papers(query_plan: QueryPlan, cache: CacheStore | None = None,
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             s2_future = executor.submit(_run_s2_sequential, s2_callables, budget, has_s2_key) if s2_callables else None
             oa_futures = {executor.submit(fn): fn for fn in oa_callables}
-            ax_futures = {executor.submit(fn): fn for fn in arxiv_callables}
-            db_futures = {executor.submit(fn): fn for fn in dblp_callables}
+            ax_future = executor.submit(_run_free_api_sequential, arxiv_callables, "arXiv", len(arxiv_callables), ARXIV_DELAY_SECONDS, budget) if arxiv_callables else None
+            db_future = executor.submit(_run_free_api_sequential, dblp_callables, "DBLP", len(dblp_callables), DBLP_DELAY_SECONDS, budget) if dblp_callables else None
             if s2_future:
                 s2_result = s2_future.result()
                 if isinstance(s2_result, list):
                     all_papers.extend(s2_result)
-            for futures in (oa_futures, ax_futures, db_futures):
-                for future in as_completed(futures):
+            for result_future in [ax_future, db_future]:
+                if result_future:
                     try:
-                        result = future.result()
-                        if isinstance(result, list):
-                            all_papers.extend(result)
+                        r = result_future.result()
+                        if isinstance(r, list):
+                            all_papers.extend(r)
                     except Exception:
                         pass
+            for future in as_completed(oa_futures):
+                try:
+                    result = future.result()
+                    if isinstance(result, list):
+                        all_papers.extend(result)
+                except Exception:
+                    pass
     else:
         # S2 key available → all tasks run in parallel.
         def _call_one(fn: Callable[[], list[Paper]], label: str, idx: int, total: int) -> list[Paper]:
@@ -147,10 +157,10 @@ def retrieve_live_papers(query_plan: QueryPlan, cache: CacheStore | None = None,
                 futures[executor.submit(_call_one, fn, "S2", i, s2_total)] = None
             for i, fn in enumerate(oa_callables):
                 futures[executor.submit(_call_one, fn, "OA", i, oa_total)] = None
-            for i, fn in enumerate(arxiv_callables):
-                futures[executor.submit(_call_one, fn, "arXiv", i, len(arxiv_callables))] = None
-            for i, fn in enumerate(dblp_callables):
-                futures[executor.submit(_call_one, fn, "DBLP", i, len(dblp_callables))] = None
+            if arxiv_callables:
+                futures[executor.submit(_run_free_api_sequential, arxiv_callables, "arXiv", len(arxiv_callables), ARXIV_DELAY_SECONDS, budget)] = None
+            if dblp_callables:
+                futures[executor.submit(_run_free_api_sequential, dblp_callables, "DBLP", len(dblp_callables), DBLP_DELAY_SECONDS, budget)] = None
             for future in as_completed(futures):
                 try:
                     result = future.result()
@@ -161,6 +171,31 @@ def retrieve_live_papers(query_plan: QueryPlan, cache: CacheStore | None = None,
 
     edges = _build_edges(all_papers)
     return all_papers, edges
+
+
+def _run_free_api_sequential(
+    callables: list[Callable[[], list[Paper]]],
+    label: str,
+    total: int,
+    delay: float,
+    budget: BudgetController | None,
+) -> list[Paper]:
+    """Run free-API tasks sequentially with *delay* between requests to avoid rate-limiting."""
+    papers: list[Paper] = []
+    for i, fn in enumerate(callables):
+        if budget and not budget.can_call_api():
+            logger.info("%s skipped task %d/%d (budget exhausted)", label, i + 1, total)
+            break
+        if i > 0:
+            time.sleep(delay)
+        try:
+            r = fn()
+            if isinstance(r, list):
+                papers.extend(r)
+                logger.info("%s retrieved %d papers (task %d/%d)", label, len(r), i + 1, total)
+        except Exception:
+            logger.warning("%s task %d/%d failed", label, i + 1, total, exc_info=True)
+    return papers
 
 
 def _run_s2_sequential(
