@@ -164,3 +164,22 @@ def get_fast_llm(temperature: float = 0.0) -> Any:
     if fast_model:
         return get_llm(model=fast_model, temperature=temperature)
     return get_llm(temperature=temperature)
+
+
+def get_structured_output_llm(temperature: float = 0.0) -> Any:
+    """Return LLM with thinking **disabled** — for ``with_structured_output`` calls.
+
+    DashScope / SiliconFlow / ZhipuAI's thinking mode is incompatible with
+    ``tool_choice=required`` which LangChain sets implicitly when using
+    ``method="function_calling"``.  This helper temporarily forces
+    ``LLM_THINKING=none`` so the structured-output call succeeds.
+    """
+    saved = os.environ.get("LLM_THINKING")
+    os.environ["LLM_THINKING"] = "none"
+    try:
+        return get_fast_llm(temperature=temperature)
+    finally:
+        if saved is None:
+            os.environ.pop("LLM_THINKING", None)
+        else:
+            os.environ["LLM_THINKING"] = saved

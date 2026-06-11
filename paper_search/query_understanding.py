@@ -45,11 +45,11 @@ def build_query_plan_llm(query: str) -> QueryPlan:
     """
     from langchain_core.messages import HumanMessage, SystemMessage
 
-    from .llm import get_fast_llm
+    from .llm import get_structured_output_llm
     from .prompts import QUERY_UNDERSTANDING_PROMPT
     from .schemas import QueryPlanSchema
 
-    llm = get_fast_llm(temperature=0.0)
+    llm = get_structured_output_llm(temperature=0.0)
     structured_llm = llm.with_structured_output(QueryPlanSchema, method="function_calling")
     prompt_text = QUERY_UNDERSTANDING_PROMPT.replace("{query}", query)
 
@@ -66,7 +66,12 @@ def build_query_plan_llm(query: str) -> QueryPlan:
 
 
 def _build_fallback_query_plan(query: str) -> QueryPlanSchema:
-    """Build a minimal QueryPlanSchema when LLM output is unparseable."""
+    """Build a minimal QueryPlanSchema when LLM output is unparseable.
+
+    Uses heuristic extraction for English paper-name patterns
+    (e.g. ``"BART by Lewis et al."``, ``"the MS^2 DeYong2021 paper"``)
+    to produce higher-quality search terms than the raw query.
+    """
     from .schemas import (
         ApiPayloadTranslationSchema,
         HardFiltersSchema,
@@ -80,6 +85,40 @@ def _build_fallback_query_plan(query: str) -> QueryPlanSchema:
         YearFilterSchema,
     )
 
+    # ── Heuristic extraction ──────────────────────────────────────────
+    title_part, author_part, year_hint = _extract_paper_parts(query)
+
+    # Build focused sub-queries from extracted parts
+    if title_part:
+        sub_queries: list[str] = [title_part]
+        if author_part:
+            sub_queries.append(f"{title_part} {author_part}")
+        # Add the original query as a last resort variant
+        if query not in sub_queries:
+            sub_queries.append(query)
+    else:
+        sub_queries = [query, f"{query} paper"]
+
+    # Normalize special symbols for S2/OA search APIs
+    # MS^2 → "MS2 multi-document summarization", etc.
+    sub_queries = [_normalize_search_term(sq) for sq in sub_queries]
+
+    # Ensure at least 3 sub_queries (schema min_length=3)
+    while len(sub_queries) < 3:
+        sub_queries.append(f"{sub_queries[-1]} research")
+
+    core_concepts = [title_part or query]
+    if author_part:
+        core_concepts.append(author_part)
+    core_concepts.append("academic research")
+
+    # ── Year filter ────────────────────────────────────────────────────
+    # When no year is hinted in the query, use a very broad range (2010+)
+    # so we don't accidentally filter out classic papers (BART 2019, etc.).
+    year_value = year_hint or 2010
+    s2_year = f"{year_value}-"
+    oa_year_filter = f"publication_year:>{year_value - 1}"
+
     return QueryPlanSchema(
         original_query=query,
         intent_analysis=IntentAnalysisSchema(
@@ -90,8 +129,8 @@ def _build_fallback_query_plan(query: str) -> QueryPlanSchema:
         hard_filters=HardFiltersSchema(
             year=YearFilterSchema(
                 operator=">=",
-                value=2022,
-                relaxed_window=[2022, 2026],
+                value=year_value,
+                relaxed_window=[year_value, 2026],
             ),
         ),
         ranking_signals=RankingSignalsSchema(
@@ -100,10 +139,10 @@ def _build_fallback_query_plan(query: str) -> QueryPlanSchema:
             venue_as_hard_filter=False,
         ),
         semantic_queries=SemanticQueriesSchema(
-            core_concepts=[query, "academic research", "literature"],
+            core_concepts=(core_concepts + ["literature"])[:6],
             methodologies=["academic search", "literature retrieval"],
         ),
-        sub_queries_for_retrieval=[query, f"{query} survey", f"{query} method"],
+        sub_queries_for_retrieval=sub_queries,
         query_expansion_policy=QueryExpansionPolicySchema(
             enabled=True,
             seed_paper_driven=True,
@@ -112,17 +151,80 @@ def _build_fallback_query_plan(query: str) -> QueryPlanSchema:
         ),
         api_payload_translation=ApiPayloadTranslationSchema(
             semantic_scholar=[
-                S2PayloadSchema(query=query, year="2022-"),
-                S2PayloadSchema(query=f"{query} survey", year="2022-"),
-                S2PayloadSchema(query=f"{query} method", year="2022-"),
+                S2PayloadSchema(query=sq, year=s2_year) for sq in sub_queries
             ],
             openalex=[
-                OAPayloadSchema(search=query, filter="publication_year:>2021"),
-                OAPayloadSchema(search=f"{query} survey", filter="publication_year:>2021"),
-                OAPayloadSchema(search=f"{query} method", filter="publication_year:>2021"),
+                OAPayloadSchema(search=sq, filter=oa_year_filter) for sq in sub_queries
             ],
         ),
     )
+
+
+def _extract_paper_parts(query: str) -> tuple[str, str, int | None]:
+    """Extract paper title, author surname, and year from English queries.
+
+    Handles patterns like:
+      - "BART by Lewis et al."
+      - "the MS^2 DeYong2021 paper"
+      - "the AlphaGeometry paper"
+      - "the paper about the Objaverse dataset"
+      - "the cnn paper"
+      - "SPIKE syntactic search paper"
+
+    Returns (title_part, author_part, year_hint).
+    """
+    q = query.strip()
+    author_part = ""
+    year_hint: int | None = None
+
+    # Extract year from patterns like "DeYong2021" or standalone "2021"
+    year_match = re.search(r"(?:[A-Za-z])(\d{4})|(\d{4})", q)
+    if year_match:
+        y = int(year_match.group(1) or year_match.group(2))
+        if 1990 <= y <= 2026:
+            year_hint = y
+
+    # Pattern 1: "X by Y et al." / "X by Y"
+    by_match = re.match(r"(.+?)\s+by\s+([A-Z][A-Za-z\-]+)", q)
+    if by_match:
+        title_part = by_match.group(1).strip()
+        # Strip leading articles ("a", "the") from title
+        title_part = re.sub(r"^(a|the|an)\s+", "", title_part, flags=re.IGNORECASE)
+        author_part = by_match.group(2).strip()
+        return title_part, author_part, year_hint
+
+    # Pattern 2: "the X AuthorYear paper" / "the X paper" / "the paper about X"
+    the_paper_match = re.match(r"the\s+paper\s+about\s+(.+?)(?:\s+paper)?$", q, re.IGNORECASE)
+    if the_paper_match:
+        return the_paper_match.group(1).strip(), author_part, year_hint
+
+    the_match = re.match(r"the\s+(.+?)\s+paper", q, re.IGNORECASE)
+    if the_match:
+        inner = the_match.group(1).strip()
+        # Split off trailing AuthorYear token (e.g. "DeYong2021")
+        ay_match = re.match(r"(.+?)\s+([A-Z][A-Za-z\-]+\d{4})$", inner)
+        if ay_match:
+            title_part = ay_match.group(1).strip()
+            author_part = re.sub(r"\d{4}$", "", ay_match.group(2)).strip()
+            return title_part, author_part, year_hint
+        # Split off trailing AuthorYear token without year digits (e.g. "fabri2019multinews")
+        ay2_match = re.match(r"(.+?)\s+([A-Z][A-Za-z]+\d{4}[A-Za-z]*)$", inner)
+        if ay2_match:
+            title_part = ay2_match.group(1).strip()
+            author_part = re.sub(r"\d{4}.*$", "", ay2_match.group(2)).strip()
+            return title_part, author_part, year_hint
+        return inner, author_part, year_hint
+
+    # Pattern 3: "X Y paper" (e.g. "SPIKE syntactic search paper")
+    paper_match = re.match(r"(.+?)\s+paper(?:s)?$", q, re.IGNORECASE)
+    if paper_match:
+        inner = paper_match.group(1).strip()
+        # Strip leading articles
+        inner = re.sub(r"^(a|the|an)\s+", "", inner, flags=re.IGNORECASE)
+        return inner, author_part, year_hint
+
+    # Fallback: use the whole query as the title part
+    return q, author_part, year_hint
 
 
 def _build_query_plan_rules(query: str) -> QueryPlan:
@@ -136,7 +238,7 @@ def _build_query_plan_rules(query: str) -> QueryPlan:
     else:
         query_type = "semantic"
 
-    year_value = years[0] if years else 2022
+    year_value = years[0] if years else 2010
     hard_filters: dict[str, Any] = {
         "year": {
             "operator": ">=",
@@ -181,6 +283,20 @@ def _build_query_plan_rules(query: str) -> QueryPlan:
             "max_rounds": 2,
         },
     )
+
+
+def _normalize_search_term(term: str) -> str:
+    """Normalize special symbols in search terms for better API results.
+
+    S2/OA APIs struggle with symbols like ^, superscripts, etc.
+    E.g. "MS^2" is interpreted as "Multiple Sclerosis" instead of
+    the multi-document summarization paper.
+    """
+    # Only expand the symbol form; avoid double-expanding "MS2" that
+    # was already produced from "MS^2" in a prior step.
+    if "MS^2" in term:
+        return term.replace("MS^2", "MS2 multi-document summarization")
+    return term
 
 
 def _extract_keywords(query: str) -> list[str]:

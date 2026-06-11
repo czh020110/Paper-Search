@@ -120,10 +120,10 @@ Return a JSON object with a "keywords" array. Example: {"keywords": ["keyword on
     try:
         from langchain_core.messages import HumanMessage
 
-        from ..llm import get_fast_llm
+        from ..llm import get_structured_output_llm
         from ..schemas import KeywordList
 
-        llm = get_fast_llm(temperature=0.0)
+        llm = get_structured_output_llm(temperature=0.0)
         structured_llm = llm.with_structured_output(KeywordList, method="function_calling")
         result: KeywordList = structured_llm.invoke([HumanMessage(content=prompt)])
         keywords = result.keywords

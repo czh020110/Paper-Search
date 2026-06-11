@@ -245,7 +245,7 @@ def _config_schema() -> dict[str, dict[str, Any]]:
 
 
 _REQUIRED_CONFIG_KEYS = [
-    "LLM_MODEL", "LLM_FAST_MODEL", "OPENAI_API_KEY",
+    "LLM_MODEL", "LLM_FAST_MODEL",
     "EMBEDDING_API_KEY", "EMBEDDING_MODEL",
     "RERANKER_API_KEY", "RERANKER_MODEL",
 ]
@@ -268,9 +268,10 @@ def _is_config_ready() -> dict[str, Any]:
     }
     required_llm_key = _PROVIDER_KEY_MAP.get(provider, "OPENAI_API_KEY")
     llm_key_missing = not os.getenv(required_llm_key, "").strip()
-    # Remove all provider keys from missing, then add back only the current one if needed
-    missing = [m for m in missing if m in ("OPENAI_API_KEY", "DASHSCOPE_API_KEY", "SILICONFLOW_API_KEY", "ZHIPUAI_API_KEY") and m != required_llm_key]
-    if llm_key_missing and required_llm_key not in missing:
+    # Remove ALL provider keys from missing — only the current provider's key matters
+    _ALL_PROVIDER_KEYS = {"OPENAI_API_KEY", "DASHSCOPE_API_KEY", "SILICONFLOW_API_KEY", "ZHIPUAI_API_KEY"}
+    missing = [m for m in missing if m not in _ALL_PROVIDER_KEYS]
+    if llm_key_missing:
         missing.append(required_llm_key)
     embedding_enabled = os.getenv("EMBEDDING_ENABLED", "true").lower() not in ("0", "false", "no")
     if not embedding_enabled:
@@ -378,7 +379,104 @@ def _write_env(updates: dict[str, str]) -> None:
     local.write_text("".join(lines), encoding="utf-8")
 
 
-# ============================ Web Page ============================ #
+# ============================ Benchmark Endpoints ============================ #
+
+_benchmark_running = False
+_benchmark_result: dict[str, Any] | None = None
+
+
+@app.get("/api/benchmark/status", tags=["评测"], summary="评测数据集状态")
+def benchmark_status() -> dict[str, Any]:
+    from .benchmark.dataset import dataset_info
+    return {**dataset_info(), "running": _benchmark_running, "has_result": _benchmark_result is not None}
+
+
+@app.post("/api/benchmark/download", tags=["评测"], summary="下载评测数据集")
+def benchmark_download() -> dict[str, Any]:
+    from .benchmark.dataset import download_dataset, dataset_info
+    try:
+        download_dataset()
+        return {"ok": True, **dataset_info()}
+    except Exception as e:
+        return {"ok": False, "message": str(e)[:200]}
+
+
+@app.post("/api/benchmark/run", tags=["评测"], summary="开始评测")
+async def benchmark_run(body: dict[str, Any] = Body({})) -> dict[str, Any]:
+    global _benchmark_running, _benchmark_result
+    if _benchmark_running:
+        return {"ok": False, "message": "评测正在运行中"}
+    _benchmark_running = True
+    try:
+        from .benchmark.runner import run_benchmark
+        limit = body.get("limit", 0)
+        _benchmark_result = run_benchmark(limit=limit)
+        return {"ok": True, "summary": {k: v for k, v in _benchmark_result.items() if k != "results"}}
+    except Exception as e:
+        return {"ok": False, "message": str(e)[:200]}
+    finally:
+        _benchmark_running = False
+
+
+@app.get("/api/benchmark/results", tags=["评测"], summary="获取最近评测结果")
+def benchmark_results() -> dict[str, Any]:
+    if _benchmark_result is None:
+        return {"ok": False, "message": "暂无评测结果"}
+    summary = {k: v for k, v in _benchmark_result.items() if k != "results"}
+    return {"ok": True, "summary": summary, "count": len(_benchmark_result.get("results", []))}
+
+
+@app.get("/api/benchmark/stream", tags=["评测"], summary="流式评测（SSE）")
+async def benchmark_stream(limit: int = Query(default=0, description="限制条数，0=全部")):
+    """Run benchmark with SSE progress updates."""
+    import asyncio
+    from .benchmark.dataset import load_dataset
+    from .benchmark.runner import run_benchmark
+
+    msg_queue: list[dict] = []
+    done_flag = [False]
+
+    def _on_progress(info: dict) -> None:
+        msg_queue.append(info)
+
+    def _run():
+        try:
+            result = run_benchmark(on_progress=_on_progress, limit=limit)
+            # Store result in module-level var
+            import paper_search.web as _self
+            _self._benchmark_result = result
+        finally:
+            done_flag[0] = True
+
+    loop = asyncio.get_event_loop()
+    future = loop.run_in_executor(None, _run)
+
+    async def _stream():
+        yield f"event: info\ndata: {json.dumps({'message': '评测启动中...'}, ensure_ascii=False)}\n\n"
+        seen = 0
+        while not done_flag[0] or seen < len(msg_queue):
+            while seen < len(msg_queue):
+                info = msg_queue[seen]
+                seen += 1
+                yield f"event: progress\ndata: {json.dumps(info, ensure_ascii=False)}\n\n"
+            if done_flag[0]:
+                break
+            await asyncio.sleep(0.3)
+
+        try:
+            await future
+        except Exception as e:
+            yield f"event: error\ndata: {json.dumps({'error': str(e)[:200]}, ensure_ascii=False)}\n\n"
+            return
+
+        if _benchmark_result:
+            summary = {k: v for k, v in _benchmark_result.items() if k != "results"}
+            yield f"event: done\ndata: {json.dumps(summary, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(_stream(), media_type="text/event-stream; charset=utf-8")
+
+
+
 
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
@@ -557,6 +655,7 @@ Embedding 并发: <b>EMBEDDING_CONCURRENCY</b>=10 workers, RPS 限速: <b>EMBEDD
 <div class="search-box">
   <input type="text" id="query" placeholder="如：2022年后关于大模型幻觉控制、使用强化学习方法、在CVPR发表的论文" />
   <button id="btn" onclick="doSearch()">检索</button>
+  <button id="btn-benchmark" onclick="openBenchmark()" style="background:#6c5ce7;margin-left:4px" title="AstaBench PaperFinder 评测">📊 评测</button>
 </div>
 
 <div id="progress" style="display:none;margin-bottom:16px">
@@ -1361,6 +1460,110 @@ loadConfig();
 </div>
 
 <div id="config-toast" class="toast" style="display:none">✅ 配置已保存到 .env.local</div>
+
+<!-- Benchmark Modal -->
+<div id="benchmark-overlay" class="modal-overlay" style="display:none">
+<div class="modal" style="max-width:640px">
+<h2>📊 AstaBench PaperFinder 评测</h2>
+<div id="bench-info" style="font-size:13px;color:#888;margin-bottom:12px">正在检查数据集…</div>
+<div id="bench-progress" style="display:none;margin-bottom:12px">
+  <div style="background:#eee;border-radius:4px;overflow:hidden;height:18px">
+    <div id="bench-bar" style="background:#6c5ce7;height:100%;width:0%;transition:width 0.3s"></div>
+  </div>
+  <div id="bench-status" style="font-size:12px;margin-top:4px;color:#666"></div>
+</div>
+<div id="bench-results" style="display:none">
+  <div style="display:flex;gap:16px;margin-bottom:12px">
+    <div style="text-align:center"><div style="font-size:28px;font-weight:bold;color:#6c5ce7" id="bench-recall">-</div><div style="font-size:12px;color:#888">Avg Recall</div></div>
+    <div style="text-align:center"><div style="font-size:28px;font-weight:bold;color#00b894" id="bench-precision">-</div><div style="font-size:12px;color:#888">Avg Precision</div></div>
+    <div style="text-align:center"><div style="font-size:28px;font-weight:bold;color:#fdcb6e" id="bench-f1">-</div><div style="font-size:12px;color:#888">Avg F1</div></div>
+  </div>
+  <div id="bench-detail" style="font-size:12px;max-height:200px;overflow-y:auto;border:1px solid #eee;border-radius:4px;padding:8px"></div>
+</div>
+<div class="actions" style="margin-top:12px">
+  <button type="button" class="btn-secondary" onclick="closeBenchmark()">关闭</button>
+  <button id="btn-bench-download" type="button" class="btn-secondary" onclick="benchDownload()" style="display:none">下载数据集</button>
+  <button id="btn-bench-run" type="button" onclick="benchRun()" style="display:none;background:#6c5ce7;color:#fff">开始评测</button>
+</div>
+</div>
+</div>
+
+<script>
+function openBenchmark() {
+  document.getElementById('benchmark-overlay').style.display = 'flex';
+  benchCheckStatus();
+}
+function closeBenchmark() {
+  document.getElementById('benchmark-overlay').style.display = 'none';
+  if (window._benchEventSource) { window._benchEventSource.close(); window._benchEventSource = null; }
+}
+
+async function benchCheckStatus() {
+  const info = document.getElementById('bench-info');
+  try {
+    const r = await fetch('/api/benchmark/status');
+    const d = await r.json();
+    if (d.downloaded) {
+      info.textContent = `✅ 数据集已就绪：${d.total} 条查询（specific: ${d.types.specific||0}, metadata: ${d.types.metadata||0}, semantic: ${d.types.semantic||0}）`;
+      document.getElementById('btn-bench-run').style.display = 'inline-block';
+      document.getElementById('btn-bench-download').style.display = 'none';
+    } else {
+      info.textContent = '❌ 数据集未下载，请先点击"下载数据集"（需要 HF_TOKEN）';
+      document.getElementById('btn-bench-download').style.display = 'inline-block';
+      document.getElementById('btn-bench-run').style.display = 'none';
+    }
+  } catch(e) { info.textContent = '检查失败: ' + e.message; }
+}
+
+async function benchDownload() {
+  const info = document.getElementById('bench-info');
+  info.textContent = '⏳ 正在下载…';
+  try {
+    const r = await fetch('/api/benchmark/download', {method:'POST'});
+    const d = await r.json();
+    if (d.ok) { benchCheckStatus(); } else { info.textContent = '❌ 下载失败: ' + (d.message||''); }
+  } catch(e) { info.textContent = '❌ 下载失败: ' + e.message; }
+}
+
+function benchRun() {
+  document.getElementById('bench-progress').style.display = 'block';
+  document.getElementById('bench-results').style.display = 'none';
+  document.getElementById('btn-bench-run').disabled = true;
+  const bar = document.getElementById('bench-bar');
+  const status = document.getElementById('bench-status');
+  bar.style.width = '0%';
+  status.textContent = '评测启动中…';
+
+  const es = new EventSource('/api/benchmark/stream');
+  window._benchEventSource = es;
+
+  es.addEventListener('progress', function(e) {
+    const d = JSON.parse(e.data);
+    const pct = Math.round(d.current / d.total * 100);
+    bar.style.width = pct + '%';
+    const recall = d.entry.recall !== undefined ? d.entry.recall.toFixed(2) : (d.entry.status === 'running' ? '⏳' : '-');
+    status.textContent = `${d.current}/${d.total} | ${d.entry.type}: recall=${recall} | 平均 recall=${d.running_avg?.recall?.toFixed(3) ?? '-'}`;
+  });
+
+  es.addEventListener('done', function(e) {
+    es.close();
+    window._benchEventSource = null;
+    const d = JSON.parse(e.data);
+    bar.style.width = '100%';
+    status.textContent = '评测完成！';
+    document.getElementById('bench-recall').textContent = d.avg_recall?.toFixed(3) || '-';
+    document.getElementById('bench-precision').textContent = d.avg_precision?.toFixed(3) || '-';
+    document.getElementById('bench-f1').textContent = d.avg_f1?.toFixed(3) || '-';
+    document.getElementById('bench-results').style.display = 'block';
+    document.getElementById('btn-bench-run').disabled = false;
+  });
+
+  es.addEventListener('error', function(e) {
+    status.textContent = '评测出错';
+    document.getElementById('btn-bench-run').disabled = false;
+  });
+}
+</script>
 
 </body>
 </html>"""

@@ -96,7 +96,7 @@ def _judge_single(query_plan: QueryPlan, paper: Paper) -> dict[str, str] | None:
     """Score a single paper via LLM with structured output."""
     from langchain_core.messages import HumanMessage, SystemMessage
 
-    from ..llm import get_fast_llm
+    from ..llm import get_structured_output_llm
     from ..prompts import JUDGE_SINGLE_PROMPT
     from ..schemas import JudgeVerdict
 
@@ -109,7 +109,7 @@ def _judge_single(query_plan: QueryPlan, paper: Paper) -> dict[str, str] | None:
         .replace("{venue}", paper.venue or "未知")
         .replace("{year}", str(paper.year or ""))
     )
-    llm = get_fast_llm(temperature=0.0)
+    llm = get_structured_output_llm(temperature=0.0)
     structured_llm = llm.with_structured_output(JudgeVerdict, method="function_calling")
 
     try:
