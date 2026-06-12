@@ -13,9 +13,12 @@ The prompt should only handle cross-field rules that Pydantic cannot express
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from .contracts import QueryPlan
 
 
 class IntentAnalysisSchema(BaseModel):
@@ -126,9 +129,13 @@ class SemanticQueriesSchema(BaseModel):
 class S2PayloadSchema(BaseModel):
     query: str = Field(
         description=(
-            "Search query for Semantic Scholar. Supports AND/OR/NOT, "
-            "exact phrases with quotes, prefix matching. "
-            "Prefer short, focused keyword combinations."
+            "Search query for Semantic Scholar's SEMANTIC search engine. "
+            "Supports natural language phrases, AND/OR/NOT, exact phrases with "
+            "quotes, and prefix matching. S2 understands research concepts — "
+            "prefer descriptive phrases like 'hallucination mitigation in large "
+            "language models using reinforcement learning' over bare keywords. "
+            "Use venue/fieldsOfStudy/minCitationCount for filtering instead of "
+            "cramming everything into the query string."
         ),
     )
     year: str | None = Field(
@@ -188,14 +195,19 @@ class OAFilterSchema(BaseModel):
     publication_year: str | None = Field(
         default=None,
         description=(
-            "Year filter, e.g. '>2021', '2022', '2020-2024'. "
+            "Year filter for OpenAlex. Only accepts a single year (e.g. '2022') "
+            "or a closed range (e.g. '2020-2024'). Do NOT use '>=2022' or '>2021' — "
+            "OpenAlex does not support comparison operators on publication_year. "
+            "For open ranges, use from_publication_date instead. "
             "Maps to filter=publication_year:..."
         ),
     )
     from_publication_date: str | None = Field(
         default=None,
         description=(
-            "Date lower bound (YYYY-MM-DD), e.g. '2022-01-01'. "
+            "Date lower bound (YYYY-MM-DD). Use this for 'since year X' filters "
+            "instead of publication_year (which cannot handle open ranges). "
+            "E.g. 'since 2022' → from_publication_date='2022-01-01'. "
             "Maps to filter=from_publication_date:..."
         ),
     )
@@ -206,7 +218,10 @@ class OAFilterSchema(BaseModel):
     primary_location_source_id: str | None = Field(
         default=None,
         description=(
-            "Venue/source OpenAlex ID, e.g. 'C121332964' for Nature. "
+            "Venue/source OpenAlex ID, e.g. 'S4363607701' for CVPR. "
+            "ONLY set this if you are CERTAIN of the exact OpenAlex source ID — "
+            "do NOT guess or fabricate IDs. If unsure, put the venue name in the "
+            "search field instead and leave this null. "
             "Maps to filter=primary_location.source.id:..."
         ),
     )
@@ -250,10 +265,17 @@ class OAPayloadSchema(BaseModel):
     search: str | None = Field(
         default=None,
         description=(
-            "Full-text search query (BM25 keyword matching). Words are ANDed by default. "
-            "Use quotes for exact phrases: '\"object hallucination\"'. "
-            "Prefer short, focused keyword combinations over long sentences. "
-            "Leave null if using filter-based search only."
+            "BM25 keyword search for OpenAlex. Words are ANDed, so every word "
+            "must appear in a matching paper. Compose a CONCISE keyword sentence "
+            "from the query's core information (excluding hard constraints like "
+            "year, venue, author — those go in filter). Include ALL relevant "
+            "non-redundant keywords: 'hallucination mitigation large language model "
+            "reinforcement learning RLHF'. Do NOT write semantic natural language "
+            "like 'how to mitigate hallucination in large language models'. "
+            "Do NOT artificially shorten to 2-3 words — that is too broad unless "
+            "the query itself only has 2-3 keywords. Use exact phrases for "
+            "compound terms: '\"object hallucination\"'. Leave null if using "
+            "filter-based search only."
         ),
     )
     filter: OAFilterSchema = Field(
@@ -283,15 +305,25 @@ class ApiPayloadTranslationSchema(BaseModel):
     semantic_scholar: list[S2PayloadSchema] = Field(
         min_length=1,
         description=(
-            "One payload per sub_query in sub_queries_for_retrieval. "
-            "Each sub_query MUST have a corresponding entry here."
+            "Search payloads for Semantic Scholar API. Each payload is an INDEPENDENT "
+            "search strategy optimized for S2's semantic search engine. "
+            "S2 supports natural language queries, AND/OR/NOT syntax, and structured "
+            "filters (venue, fieldsOfStudy, minCitationCount). Generate FEWER but "
+            "RICH payloads — combine related concepts into single semantic queries "
+            "rather than splitting into many thin searches. "
+            "Count does NOT need to match openalex count."
         ),
     )
     openalex: list[OAPayloadSchema] = Field(
         min_length=1,
         description=(
-            "One payload per sub_query in sub_queries_for_retrieval. "
-            "Each sub_query MUST have a corresponding entry here."
+            "Search payloads for OpenAlex API. Each payload is an INDEPENDENT "
+            "search strategy optimized for OpenAlex's BM25 keyword matching. "
+            "The search field should contain a concise keyword sentence with ALL "
+            "relevant non-redundant terms (not just 2-3 words — that is too broad). "
+            "Use filter fields (publication_year, type, primary_location_source_id) "
+            "for structured constraints. Generate 1-3 payloads covering different "
+            "search angles. Count does NOT need to match semantic_scholar count."
         ),
     )
 
@@ -321,23 +353,27 @@ class QueryPlanSchema(BaseModel):
     ranking_signals: RankingSignalsSchema
     semantic_queries: SemanticQueriesSchema
     sub_queries_for_retrieval: list[str] = Field(
-        min_length=3,
+        min_length=2,
         max_length=5,
         description=(
-            "3-5 English search queries formed by combining core_concepts and "
-            "methodologies.  Each query should cover a DIFFERENT angle or "
-            "combination — don't just rephrase the same idea.  "
-            "ALL characters must be ASCII/English — NO Chinese, Japanese, or "
-            "Korean characters.  Include venue names in queries where the user "
-            "specified a venue."
+            "2-5 English phrases summarizing the core search INTENT of this query. "
+            "These are NOT directly sent to search APIs — api_payload_translation "
+            "holds the actual API-specific search payloads. Instead, these phrases "
+            "serve as: (1) a human-readable search intent summary for result display, "
+            "(2) input to the reranker for relevance scoring, and (3) seed keywords "
+            "for snowball expansion deduplication. Each phrase should capture a "
+            "distinct aspect or angle of the query. All characters must be ASCII/English."
         ),
     )
     query_expansion_policy: QueryExpansionPolicySchema
     api_payload_translation: ApiPayloadTranslationSchema = Field(
         description=(
-            "Translate EVERY sub_query from sub_queries_for_retrieval into "
-            "API-specific payloads.  semantic_scholar and openalex arrays MUST "
-            "have the same length as sub_queries_for_retrieval — one entry per sub_query."
+            "API-specific search payloads. semantic_scholar and openalex arrays "
+            "are INDEPENDENT — they can have different counts and different search "
+            "strategies. S2 payloads should leverage semantic queries + structured "
+            "filters; OA payloads should use short keyword searches + filter fields. "
+            "This is the SOLE source of search terms for live retrieval — "
+            "sub_queries_for_retrieval is NOT used as API input."
         ),
     )
 

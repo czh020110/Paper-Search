@@ -93,7 +93,7 @@ def retrieve_live_papers(query_plan: QueryPlan, cache: CacheStore | None = None,
             for query in english_queries:
                 oa_callables.append(lambda q=query, fi=fallback_filter: search_works(query=q, oa_filter=fi, per_page=25, cache=cache))
 
-    # arXiv: use LLM-translated sub_queries directly (same as S2/OA)
+    # arXiv: semantic search engine — sub_queries_for_retrieval serves as intent summary
     if _is_source_enabled("SEARCH_SOURCE_ARXIV") and not arxiv_callables:
         for query in (query_plan.sub_queries_for_retrieval or [query_plan.original_query]):
             arxiv_callables.append(lambda q=query: search_arxiv(query=q, max_results=20))
@@ -339,7 +339,7 @@ def _parse_oa_payload(
             oa_filter = OAFilterSchema(**raw_filter)
         except Exception:
             logger.warning("OA payload filter parse failed, using fallback year filter")
-            oa_filter = OAFilterSchema(publication_year=f">{default_year_from - 1}" if default_year_from else None)
+            oa_filter = OAFilterSchema(publication_year=_oa_normalize_year(f">{default_year_from - 1}") if default_year_from else None)
     elif isinstance(raw_filter, str) and raw_filter:
         # Legacy format — extract publication_year expression directly from raw filter string
         # e.g. "publication_year:>2021" → publication_year=">2021"
@@ -348,9 +348,50 @@ def _parse_oa_payload(
         oa_filter = OAFilterSchema(publication_year=year_match.group(1) if year_match else None)
     else:
         # No filter provided — use default year_from
-        oa_filter = OAFilterSchema(publication_year=f">{default_year_from - 1}" if default_year_from else None)
+        oa_filter = OAFilterSchema(publication_year=_oa_normalize_year(f">{default_year_from - 1}") if default_year_from else None)
+
+    # Normalize publication_year from S2-style formats to OA-compatible format
+    if oa_filter and oa_filter.publication_year:
+        oa_filter.publication_year = _oa_normalize_year(oa_filter.publication_year)
+
+    # OA publication_year only accepts a single year or closed range (e.g. "2022", "2020-2024").
+    # Open ranges like ">2021" are invalid for publication_year — must use from_publication_date.
+    if oa_filter and oa_filter.publication_year:
+        import re as _re
+        if _re.match(r"^>\d{4}$", oa_filter.publication_year):
+            # Convert ">2021" → from_publication_date="2022-01-01"
+            year_val = int(oa_filter.publication_year[1:]) + 1
+            if not oa_filter.from_publication_date:
+                oa_filter.from_publication_date = f"{year_val}-01-01"
+            oa_filter.publication_year = None
 
     return q, oa_filter, sort, per_page
+
+
+def _oa_normalize_year(raw: str) -> str:
+    """Normalize a year expression to OpenAlex-compatible format.
+
+    LLM may output S2-style or generic year expressions that OA does not understand.
+    OA ``publication_year`` only accepts a single year (``2022``) or a closed range
+    (``2022-2026``).  Open ranges (``>=``) must use ``from_publication_date`` instead.
+
+    Conversion examples:
+      "2022-"  → ">2021"  (delegated to from_publication_date downstream)
+      ">=2022" → ">2021"  (delegated to from_publication_date downstream)
+      ">2021"  → ">2021"  (already OA-compatible for from_publication_date)
+      "2020-2024" → "2020-2024"  (already OA-compatible for publication_year)
+    """
+    import re as _re
+    raw = raw.strip()
+    # S2 open range: "2022-"
+    m = _re.match(r"^(\d{4})-$", raw)
+    if m:
+        return f">{int(m.group(1)) - 1}"
+    # >= syntax: ">=2022" → ">2021"
+    m = _re.match(r"^>=(\d{4})$", raw)
+    if m:
+        return f">{int(m.group(1)) - 1}"
+    return raw
 
 
 def _parse_s2_payload(entry: dict[str, Any], default_year_from: int | None) -> "S2PayloadSchema | None":

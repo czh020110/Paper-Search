@@ -111,7 +111,7 @@
 - **semantic（语义型）**：用户想找某类方法、主题或领域的论文，没有锁定具体篇目（例如"关于大模型幻觉控制的论文"）。此类型走多角度语义扩展检索路径，子查询覆盖不同关键词组合和角度。
 - **metadata（结构化过滤型）**：用户给出了明确的结构化约束（例如年份、会议、作者、领域等）。此类型优先消费 `api_payload_translation` 中的结构化过滤参数，将硬约束直接翻译为各 API 原生过滤条件。
 
-4. 模块二:初检索, 初次检索不再只使用单条 query 获取 10 篇"种子文献"，而是对 `sub_queries_for_retrieval` 逐条调用 Semantic Scholar 与 OpenAlex 两家学术论文检索 API（Semantic Scholar 侧重计算机科学和生物医学领域的语义搜索，OpenAlex 为开放学术索引覆盖面广），每个 query × 每个 API 各取一批结果，合并去重后形成 30~50 篇"种子文献"候选池。初检索阶段优先保证召回，坏种子交由后续粗筛、Reranker 与 LLM 精筛收口；完成后记录最小 golden set 的召回情况、API 调用数和耗时。与此同时，初检索不再对所有查询使用同一条检索路径，而是根据 `intent_analysis.query_type` 选择不同策略：`navigational` 优先走标题精确匹配路径，`semantic` 优先走多角度语义扩展检索路径，`metadata` 优先消费 `api_payload_translation` 中的结构化过滤参数；`api_payload_translation` 在初检索阶段必须被实际使用，而不是只作为中间产物生成后闲置。
+4. 模块二:初检索, 初次检索不再只使用单条 query 获取 10 篇"种子文献"，而是直接从 `api_payload_translation` 中取 S2 和 OA 各自独立的搜索 payload 分别调用 API。**S2 和 OA 各自独立生成搜索策略，数量和策略可不一致**：S2 偏向语义长句 + 结构化过滤（venue、year、minCitationCount），OA 偏向 BM25 关键词句子 + filter 字段（from_publication_date、type）。`sub_queries_for_retrieval` 仅作为搜索意图摘要，供 Reranker、滚雪球和结果展示使用，不直接作为 API 搜索词。初检索阶段优先保证召回，坏种子交由后续粗筛、Reranker 与 LLM 精筛收口；完成后记录最小 golden set 的召回情况、API 调用数和耗时。与此同时，初检索不再对所有查询使用同一条检索路径，而是根据 `intent_analysis.query_type` 选择不同策略：`navigational` 优先走标题精确匹配路径，`semantic` 优先走多角度语义扩展检索路径，`metadata` 优先消费 `api_payload_translation` 中的结构化过滤参数。
 
 5. 模块三：滚雪球模块 — 在精筛完成后，基于 LLM 判定为”高度相关”的论文自动扩展检索范围。  
    在精筛完成后执行（此时论文已有 LLM 相关性判定），调用 `run_snowball()` 通过 LangGraph StateGraph 迭代执行四个节点：  

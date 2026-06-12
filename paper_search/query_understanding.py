@@ -98,15 +98,64 @@ def _build_query_plan_rules(query: str) -> QueryPlan:
     }
     sub_queries = _build_sub_queries(query, query_type, semantic_queries)
 
+    # S2 payloads: semantic search — combine concepts into descriptive queries + structured filters
+    s2_payloads: list[dict[str, Any]] = []
+    if query_type == "navigational":
+        for sub_query in sub_queries:
+            s2_payloads.append({"query": sub_query, "year": f"{year_value}-", "limit": 20})
+    else:
+        # Semantic/metadata: rich combined queries
+        core = semantic_queries["core_concepts"]
+        methods = semantic_queries["methodologies"]
+        venue_names = [v for v in ranking_signals.get("preferred_venues", []) if v.lower() in VENUE_KEYWORDS]
+        s2_payloads.append({
+            "query": " ".join(core[:5] + methods[:2]),
+            "year": f"{year_value}-",
+            "venue": ",".join(venue_names) if venue_names else None,
+            "limit": 30,
+        })
+        if methods:
+            s2_payloads.append({
+                "query": " ".join(methods[:3]),
+                "year": f"{year_value}-",
+                "fields_of_study": "Computer Science",
+                "limit": 20,
+            })
+
+    # OA payloads: BM25 keyword matching — concise keyword sentence + filter fields
+    oa_payloads: list[dict[str, Any]] = []
+    if query_type == "navigational":
+        for sub_query in sub_queries:
+            oa_payloads.append({"search": sub_query, "filter": {"publication_year": f">{year_value - 1}"}})
+    else:
+        # Combine all non-redundant keywords into a concise BM25 sentence
+        core = semantic_queries["core_concepts"]
+        methods = semantic_queries["methodologies"]
+        # Deduplicate tokens across core + methods, preserving order
+        seen_tokens: set[str] = set()
+        all_keywords: list[str] = []
+        for kw in core + methods:
+            if kw.lower() not in seen_tokens:
+                seen_tokens.add(kw.lower())
+                all_keywords.append(kw)
+        if all_keywords:
+            # Payload 1: comprehensive keyword sentence (all non-redundant terms)
+            oa_payloads.append({
+                "search": " ".join(all_keywords[:8]),
+                "filter": {"publication_year": f">{year_value - 1}"},
+            })
+        # Payload 2: method-focused if distinct
+        if methods:
+            method_kw = [kw for kw in methods if kw.lower() not in {c.lower() for c in core}]
+            if method_kw:
+                oa_payloads.append({
+                    "search": " ".join(method_kw[:5]),
+                    "filter": {"publication_year": f">{year_value - 1}"},
+                })
+
     api_payload_translation = {
-        "semantic_scholar": [
-            {"query": sub_query, "year": f"{year_value}-", "limit": 20}
-            for sub_query in sub_queries
-        ],
-        "openalex": [
-            {"search": sub_query, "filter": {"publication_year": f">{year_value - 1}"}}
-            for sub_query in sub_queries
-        ],
+        "semantic_scholar": [{k: v for k, v in p.items() if v is not None} for p in s2_payloads],
+        "openalex": [{k: v for k, v in p.items() if v is not None} for p in oa_payloads],
     }
 
     return QueryPlan(

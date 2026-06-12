@@ -793,11 +793,15 @@ outputs/
 2. 抽取高可信硬约束：如年份、作者唯一限定、明确主题边界
 3. 抽取强排序信号：如 venue、方法偏好、经典术语
 4. 生成语义扩展词：同义词、缩写、上下位概念（semantic_queries 含 core_concepts 和 methodologies 两个维度）
-5. 生成多条检索子查询，根据查询类型调整策略：
+5. 生成检索意图摘要（`sub_queries_for_retrieval`），根据查询类型调整策略：
    - navigational：首条 sub_query 为论文标题/核心短语，便于精确匹配
    - semantic：sub_queries 覆盖不同角度和关键词组合
    - metadata：sub_queries 包含结构化约束关键词
-6. 翻译为各 API 可接受的原生参数结构（`api_payload_translation`），实际检索时优先使用
+   - 注意：sub_queries_for_retrieval 仅作为搜索意图摘要，供 Reranker、滚雪球和结果展示使用，**不直接作为 API 搜索词**
+6. 翻译为各 API 可接受的原生参数结构（`api_payload_translation`），S2 和 OA 各自独立生成：
+   - **S2（语义搜索）**：生成 1-3 条自然语言语义查询 + 结构化过滤（venue、fieldsOfStudy、minCitationCount），充分利用 S2 的语义理解能力
+   - **OA（BM25 关键词匹配）**：生成 1-3 条精简关键词句子 + filter 字段（from_publication_date、type 等），OA 的 search 里词越多结果越少，需精炼
+   - 两个数组**数量和策略可不一致**，不强制一一对应 sub_queries_for_retrieval
 
 ##### 查询类型（`intent_analysis.query_type`）详细说明
 
@@ -932,23 +936,24 @@ outputs/
 核心流程（根据 `query_type` 路由到不同检索策略）：
 
 1. 根据 `intent_analysis.query_type` 选择检索策略：
-   - **navigational**：首条 sub_query 走 S2 标题精确搜索（limit=5），后续 sub_query 走语义搜索
-   - **semantic**：所有 sub_query 语义搜索，limit_per_query=15，S2 + OA 双源并行
-   - **metadata**：优先使用 `api_payload_translation` 定制参数（S2 year+venue 过滤、OA filter 精准检索），回退到通用搜索
-2. 对 `sub_queries_for_retrieval` 逐条调用 Semantic Scholar 与 OpenAlex，每个 query × 每个 API 各取一批结果
-3. S2 检索策略：有 API Key 时与 OA 放入同一线程池全并发（上限 ~100 req/s）；无 Key 时单线程顺序执行，请求间间隔 1 秒（遵守公共端点 ~1 req/s 限制）
-4. 优先使用 `api_payload_translation` 中的定制参数（借鉴 SPAR 做法），**必须实际使用，不能只生成不消费**
-5. 每条子查询 S2 + OA 双源并行
-6. 对返回结果进行字段归一化
-7. 按 DOI / ArXiv / S2 / OpenAlex / 标题归一化顺序去重
-8. 合并得到 30~50 篇种子候选池，加入 `CandidatePool`，状态置为 `seed`
+   - **navigational**：使用 `sub_queries_for_retrieval` 走各源标题精确搜索
+   - **semantic/metadata**：直接从 `api_payload_translation` 取 S2/OA 各自独立的 payload，**不再遍历 sub_queries_for_retrieval**
+2. S2 检索：遍历 `api_payload_translation.semantic_scholar` 中每条 S2PayloadSchema，利用语义查询 + 结构化过滤（venue、year、minCitationCount）调 S2 API
+3. OA 检索：遍历 `api_payload_translation.openalex` 中每条 OAPayloadSchema，利用 BM25 关键词句子 + filter 字段（from_publication_date、type）调 OA API
+4. S2 与 OA 的 payload 数量和策略可不一致，各自独立生成、独立消费
+5. S2 并发策略：有 API Key 时与 OA 放入同一线程池全并发（上限 ~100 req/s）；无 Key 时单线程顺序执行，请求间间隔 1 秒
+6. 当 `api_payload_translation` 为空时，fallback 用 `semantic_queries.core_concepts + methodologies` 构造搜索词
+7. 对返回结果进行字段归一化
+8. 按 DOI / ArXiv / S2 / OpenAlex / 标题归一化顺序去重
+9. 合并得到 30~50 篇种子候选池，加入 `CandidatePool`，状态置为 `seed`
 
 关键策略：
 
 - 初检索目标是**高召回**，不是高精度；坏种子交由后续粗筛、Reranker 与 LLM 精筛收口
-- **api_payload_translation 必须实际使用**，不能只生成不消费
-- 每源返回数量、并发度、预算都必须参数化
-- **检索策略由 query_type 路由决定**，不是所有查询走同一条路径
+- **api_payload_translation 是搜索词的唯一来源**，sub_queries_for_retrieval 仅作为搜索意图摘要
+- **S2 偏语义长句+结构化过滤，OA 偏精简关键词+filter 字段**，差异化检索策略
+- OA 年份开放范围（如 >=2022）必须用 `from_publication_date` 而非 `publication_year`（后者不支持比较运算符）
+- OA venue 过滤不能通过 `primary_location.source.display_name`（不是可过滤字段），venue 名应放入 `search` 或代码侧自动查找 Source ID
 
 #### 4.2.4 阶段出口
 
