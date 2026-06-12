@@ -124,8 +124,62 @@ class SemanticQueriesSchema(BaseModel):
 
 
 class S2PayloadSchema(BaseModel):
-    query: str = Field(description="Search query string for Semantic Scholar.")
-    year: str = Field(description="Year range filter, e.g. '2022-' for >=2022.")
+    query: str = Field(
+        description=(
+            "Search query for Semantic Scholar. Supports AND/OR/NOT, "
+            "exact phrases with quotes, prefix matching. "
+            "Prefer short, focused keyword combinations."
+        ),
+    )
+    year: str | None = Field(
+        default=None,
+        description=(
+            "Year or range filter, e.g. '2022-', '2020-2024', '2019'. "
+            "Maps to S2 year parameter."
+        ),
+    )
+    venue: str | None = Field(
+        default=None,
+        description=(
+            "Comma-separated venue names, e.g. 'CVPR,NeurIPS'. "
+            "Maps to S2 venue parameter."
+        ),
+    )
+    fields_of_study: str | None = Field(
+        default=None,
+        description=(
+            "Comma-separated fields of study, e.g. 'Computer Science,Artificial Intelligence'. "
+            "Maps to S2 fieldsOfStudy parameter."
+        ),
+    )
+    publication_types: str | None = Field(
+        default=None,
+        description=(
+            "Comma-separated publication types, e.g. 'JournalArticle,Conference'. "
+            "Maps to S2 publicationTypes parameter."
+        ),
+    )
+    min_citation_count: int | None = Field(
+        default=None,
+        description="Minimum citation count filter. Maps to S2 minCitationCount parameter.",
+    )
+    open_access_pdf: bool | None = Field(
+        default=None,
+        description="If true, only return papers with open access PDFs. Maps to S2 openAccessPdf parameter.",
+    )
+    sort: str | None = Field(
+        default=None,
+        description=(
+            "Sort order, e.g. 'citationCount:desc', 'publicationDate:desc'. "
+            "Maps to S2 sort parameter."
+        ),
+    )
+    limit: int = Field(
+        default=20,
+        ge=1,
+        le=1000,
+        description="Maximum number of results (max 1000).",
+    )
 
 
 class OAFilterSchema(BaseModel):

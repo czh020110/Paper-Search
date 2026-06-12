@@ -4,7 +4,7 @@ import logging
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlencode
 
 import httpx
@@ -13,6 +13,9 @@ from ..cache import CacheStore
 from ..contracts import Paper
 from ..errors import classify_httpx_error, is_retryable
 from .shared import VENUE_ALIASES
+
+if TYPE_CHECKING:
+    from ..schemas import S2PayloadSchema
 
 logger = logging.getLogger(__name__)
 
@@ -24,14 +27,49 @@ MAX_RETRIES = 3
 RETRY_BACKOFF = 2.0  # seconds, multiplied by attempt number
 
 
-def search_papers(query: str, year_from: int | None = None, limit: int = 20, cache: CacheStore | None = None) -> list[Paper]:
+def build_s2_params(payload: "S2PayloadSchema") -> dict[str, Any]:
+    """Convert an S2PayloadSchema to query parameters for S2 paper search API."""
     params: dict[str, Any] = {
-        "query": query,
+        "query": payload.query,
         "fields": S2_FIELDS,
-        "limit": limit,
+        "limit": payload.limit,
     }
-    if year_from is not None:
-        params["year"] = f"{year_from}-"
+    if payload.year:
+        params["year"] = payload.year
+    if payload.venue:
+        params["venue"] = payload.venue
+    if payload.fields_of_study:
+        params["fieldsOfStudy"] = payload.fields_of_study
+    if payload.publication_types:
+        params["publicationTypes"] = payload.publication_types
+    if payload.min_citation_count is not None:
+        params["minCitationCount"] = payload.min_citation_count
+    if payload.open_access_pdf is True:
+        # S2 openAccessPdf is a flag parameter — presence activates the filter, value is ignored
+        params["openAccessPdf"] = ""
+    if payload.sort:
+        params["sort"] = payload.sort
+    return params
+
+
+def search_papers(
+    query: str,
+    year_from: int | None = None,
+    limit: int = 20,
+    cache: CacheStore | None = None,
+    *,
+    s2_payload: "S2PayloadSchema | None" = None,
+) -> list[Paper]:
+    if s2_payload is not None:
+        params = build_s2_params(s2_payload)
+    else:
+        params = {
+            "query": query,
+            "fields": S2_FIELDS,
+            "limit": limit,
+        }
+        if year_from is not None:
+            params["year"] = f"{year_from}-"
 
     headers = _build_headers()
     url = f"{S2_BASE_URL}/paper/search?{urlencode(params)}"

@@ -16,7 +16,7 @@ from .openalex import search_works, search_works_by_title
 from .semantic_scholar import search_papers, search_papers_by_title
 
 if TYPE_CHECKING:
-    from ..schemas import OAFilterSchema
+    from ..schemas import OAFilterSchema, S2PayloadSchema
 
 logger = logging.getLogger(__name__)
 
@@ -61,12 +61,10 @@ def retrieve_live_papers(query_plan: QueryPlan, cache: CacheStore | None = None,
             s2_payloads = query_plan.api_payload_translation.get("semantic_scholar", [])
             if s2_payloads:
                 for entry in s2_payloads:
-                    q_raw = entry.get("query", "")
-                    q = _strip_cjk(q_raw)
-                    if not q or not _has_alpha(q):
+                    s2_p = _parse_s2_payload(entry, year_from)
+                    if not s2_p:
                         continue
-                    y = _parse_year(entry.get("year"))
-                    s2_callables.append(lambda q=q, y=y: search_papers(query=q, year_from=y, limit=20, cache=cache))
+                    s2_callables.append(lambda p=s2_p: search_papers(query=p.query, s2_payload=p, cache=cache))
         if _is_source_enabled("SEARCH_SOURCE_OA"):
             oa_payloads = query_plan.api_payload_translation.get("openalex", [])
             if oa_payloads:
@@ -306,15 +304,6 @@ def _extract_year_from(query_plan: QueryPlan) -> int | None:
     return None
 
 
-def _parse_year(year_str: str | None) -> int | None:
-    """Parse S2 year parameter like '2022-' into an integer."""
-    if not year_str:
-        return None
-    import re as _re
-    match = _re.search(r"(\d{4})", year_str)
-    return int(match.group(1)) if match else None
-
-
 def _parse_oa_payload(
     entry: dict[str, Any], default_year_from: int | None
 ) -> tuple[str | None, "OAFilterSchema | None", str | None, int]:
@@ -362,6 +351,45 @@ def _parse_oa_payload(
         oa_filter = OAFilterSchema(publication_year=f">{default_year_from - 1}" if default_year_from else None)
 
     return q, oa_filter, sort, per_page
+
+
+def _parse_s2_payload(entry: dict[str, Any], default_year_from: int | None) -> "S2PayloadSchema | None":
+    """Parse an S2 payload entry from api_payload_translation.
+
+    Supports both the new structured format (with S2PayloadSchema fields)
+    and the legacy format (only query + year).
+
+    Returns S2PayloadSchema or None if query is unusable.
+    """
+    from ..schemas import S2PayloadSchema
+
+    q_raw = entry.get("query", "")
+    q = _strip_cjk(q_raw) if q_raw else ""
+    if not q or not _has_alpha(q):
+        return None
+
+    # year: prefer explicit year field, then fallback to default_year_from
+    year = entry.get("year")
+    if not year and default_year_from is not None:
+        year = f"{default_year_from}-"
+
+    try:
+        raw_limit = entry.get("limit", 20)
+        limit = raw_limit if isinstance(raw_limit, int) and 1 <= raw_limit <= 1000 else 20
+        return S2PayloadSchema(
+            query=q,
+            year=year,
+            venue=entry.get("venue"),
+            fields_of_study=entry.get("fields_of_study"),
+            publication_types=entry.get("publication_types"),
+            min_citation_count=entry.get("min_citation_count"),
+            open_access_pdf=entry.get("open_access_pdf"),
+            sort=entry.get("sort"),
+            limit=limit,
+        )
+    except Exception as exc:
+        logger.warning("S2 payload parse failed (%s), using query + year fallback", exc)
+        return S2PayloadSchema(query=q, year=year)
 
 
 def _build_edges(_papers: list[Paper]) -> list[dict[str, Any]]:

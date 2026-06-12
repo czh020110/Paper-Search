@@ -99,7 +99,10 @@ def _build_query_plan_rules(query: str) -> QueryPlan:
     sub_queries = _build_sub_queries(query, query_type, semantic_queries)
 
     api_payload_translation = {
-        "semantic_scholar": [{"query": sub_query, "year": f"{year_value}-"} for sub_query in sub_queries],
+        "semantic_scholar": [
+            {"query": sub_query, "year": f"{year_value}-", "limit": 20}
+            for sub_query in sub_queries
+        ],
         "openalex": [
             {"search": sub_query, "filter": {"publication_year": f">{year_value - 1}"}}
             for sub_query in sub_queries
