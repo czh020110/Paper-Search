@@ -4,7 +4,7 @@ import logging
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlencode
 
 import httpx
@@ -14,6 +14,9 @@ from ..contracts import Paper
 from ..errors import classify_httpx_error, is_retryable
 from .shared import VENUE_ALIASES
 
+if TYPE_CHECKING:
+    from ..schemas import OAFilterSchema
+
 logger = logging.getLogger(__name__)
 
 OA_BASE_URL = "https://api.openalex.org"
@@ -22,21 +25,80 @@ MAX_RETRIES = 3
 RETRY_BACKOFF = 2.0
 
 
-def search_works(query: str, year_from: int | None = None, per_page: int = 25, cache: CacheStore | None = None) -> list[Paper]:
+def build_oa_filter_string(f: "OAFilterSchema") -> str | None:
+    """Convert an OAFilterSchema to an OpenAlex filter query string."""
+    parts: list[str] = []
+    if f.publication_year:
+        parts.append(f"publication_year:{f.publication_year}")
+    if f.from_publication_date:
+        parts.append(f"from_publication_date:{f.from_publication_date}")
+    if f.to_publication_date:
+        parts.append(f"to_publication_date:{f.to_publication_date}")
+    if f.primary_location_source_id:
+        parts.append(f"primary_location.source.id:{f.primary_location_source_id}")
+    if f.authorships_author_id:
+        parts.append(f"authorships.author.id:{f.authorships_author_id}")
+    if f.topics_id:
+        parts.append(f"topics.id:{f.topics_id}")
+    if f.type:
+        parts.append(f"type:{f.type}")
+    if f.is_oa is not None:
+        parts.append(f"is_oa:{str(f.is_oa).lower()}")
+    if f.has_abstract is not None:
+        parts.append(f"has_abstract:{str(f.has_abstract).lower()}")
+    if f.language:
+        parts.append(f"language:{f.language}")
+    if f.cited_by_count:
+        parts.append(f"cited_by_count:{f.cited_by_count}")
+    return ",".join(parts) if parts else None
+
+
+def _build_common_params(per_page: int | None = None) -> dict[str, Any]:
+    """Build params dict with mailto and api_key from env vars."""
+    params: dict[str, Any] = {}
+    mailto = os.getenv("OPENALEX_MAILTO")
+    if mailto:
+        params["mailto"] = mailto
+    api_key = os.getenv("OPENALEX_API_KEY")
+    if api_key:
+        params["api_key"] = api_key
+    if per_page is not None:
+        params["per_page"] = per_page
+    return params
+
+
+def search_works(
+    query: str | None = None,
+    year_from: int | None = None,
+    per_page: int = 25,
+    cache: CacheStore | None = None,
+    oa_filter: "OAFilterSchema | None" = None,
+    sort: str | None = None,
+) -> list[Paper]:
     papers: list[Paper] = []
     cursor = "*"
     while cursor:
-        params: dict[str, Any] = {
-            "search": query,
-            "per_page": per_page,
-            "cursor": cursor,
-        }
-        if year_from is not None:
-            params["filter"] = f"publication_year:>{year_from - 1}"
+        params: dict[str, Any] = _build_common_params(per_page)
+        params["cursor"] = cursor
 
-        mailto = os.getenv("OPENALEX_MAILTO")
-        if mailto:
-            params["mailto"] = mailto
+        # search parameter
+        if query:
+            params["search"] = query
+
+        # filter parameter — merge structured filter with year_from fallback
+        filter_parts: list[str] = []
+        if oa_filter:
+            structured = build_oa_filter_string(oa_filter)
+            if structured:
+                filter_parts.append(structured)
+        if year_from is not None and not (oa_filter and oa_filter.publication_year):
+            filter_parts.append(f"publication_year:>{year_from - 1}")
+        if filter_parts:
+            params["filter"] = ",".join(filter_parts)
+
+        # sort parameter
+        if sort:
+            params["sort"] = sort
 
         url = f"{OA_BASE_URL}/works?{urlencode(params, doseq=True)}"
         payload = _request_with_retry(url, cache=cache)
@@ -52,15 +114,9 @@ def search_works_by_title(title: str, per_page: int = 10, cache: CacheStore | No
     papers: list[Paper] = []
     cursor = "*"
     while cursor:
-        params: dict[str, Any] = {
-            "search": title,
-            "per_page": per_page,
-            "cursor": cursor,
-        }
-
-        mailto = os.getenv("OPENALEX_MAILTO")
-        if mailto:
-            params["mailto"] = mailto
+        params: dict[str, Any] = _build_common_params(per_page)
+        params["search"] = title
+        params["cursor"] = cursor
 
         url = f"{OA_BASE_URL}/works?{urlencode(params, doseq=True)}"
         payload = _request_with_retry(url, cache=cache)
@@ -80,14 +136,9 @@ def get_work_citations(openalex_id: str, cache: CacheStore | None = None, per_pa
     papers: list[Paper] = []
     cursor = "*"
     while cursor:
-        params: dict[str, Any] = {
-            "filter": f"cites:{openalex_id}",
-            "per_page": per_page,
-            "cursor": cursor,
-        }
-        mailto = os.getenv("OPENALEX_MAILTO")
-        if mailto:
-            params["mailto"] = mailto
+        params: dict[str, Any] = _build_common_params(per_page)
+        params["filter"] = f"cites:{openalex_id}"
+        params["cursor"] = cursor
         url = f"{OA_BASE_URL}/works?{urlencode(params, doseq=True)}"
         payload = _request_with_retry(url, cache=cache)
         raw = cast(list[dict[str, Any]], payload.get("results") or [])
@@ -105,10 +156,7 @@ def get_work_references(openalex_id: str, cache: CacheStore | None = None, per_p
     referenced works in bulk via ``GET /works?filter=openalex:{id1}|{id2}|...``
     """
     # First, fetch the work itself to get its referenced_works list
-    params: dict[str, Any] = {}
-    mailto = os.getenv("OPENALEX_MAILTO")
-    if mailto:
-        params["mailto"] = mailto
+    params: dict[str, Any] = _build_common_params()
     work_url = f"{OA_BASE_URL}/works/{openalex_id}?{urlencode(params)}"
     payload = _request_with_retry(work_url, cache=cache)
     ref_ids = cast(list[str], payload.get("referenced_works") or [])
@@ -127,12 +175,8 @@ def get_work_references(openalex_id: str, cache: CacheStore | None = None, per_p
         return []
 
     # Batch query with pipe-separated IDs
-    batch_params: dict[str, Any] = {
-        "filter": "openalex:" + "|openalex:".join(short_ids),
-        "per_page": per_page,
-    }
-    if mailto:
-        batch_params["mailto"] = mailto
+    batch_params: dict[str, Any] = _build_common_params(per_page)
+    batch_params["filter"] = "openalex:" + "|openalex:".join(short_ids)
     batch_url = f"{OA_BASE_URL}/works?{urlencode(batch_params, doseq=True)}"
     batch_payload = _request_with_retry(batch_url, cache=cache)
     raw = cast(list[dict[str, Any]], batch_payload.get("results") or [])

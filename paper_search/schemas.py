@@ -128,10 +128,100 @@ class S2PayloadSchema(BaseModel):
     year: str = Field(description="Year range filter, e.g. '2022-' for >=2022.")
 
 
+class OAFilterSchema(BaseModel):
+    """OpenAlex filter fields — all optional, combined with AND semantics."""
+
+    publication_year: str | None = Field(
+        default=None,
+        description=(
+            "Year filter, e.g. '>2021', '2022', '2020-2024'. "
+            "Maps to filter=publication_year:..."
+        ),
+    )
+    from_publication_date: str | None = Field(
+        default=None,
+        description=(
+            "Date lower bound (YYYY-MM-DD), e.g. '2022-01-01'. "
+            "Maps to filter=from_publication_date:..."
+        ),
+    )
+    to_publication_date: str | None = Field(
+        default=None,
+        description="Date upper bound (YYYY-MM-DD). Maps to filter=to_publication_date:...",
+    )
+    primary_location_source_id: str | None = Field(
+        default=None,
+        description=(
+            "Venue/source OpenAlex ID, e.g. 'C121332964' for Nature. "
+            "Maps to filter=primary_location.source.id:..."
+        ),
+    )
+    authorships_author_id: str | None = Field(
+        default=None,
+        description=(
+            "Author OpenAlex ID, e.g. 'A5023888391'. "
+            "Maps to filter=authorships.author.id:..."
+        ),
+    )
+    topics_id: str | None = Field(
+        default=None,
+        description="Topic OpenAlex ID, e.g. 'T10438'. Maps to filter=topics.id:...",
+    )
+    type: str | None = Field(
+        default=None,
+        description=(
+            "Work type: 'article', 'book-chapter', 'dissertation', 'preprint', etc. "
+            "Maps to filter=type:..."
+        ),
+    )
+    is_oa: bool | None = Field(
+        default=None,
+        description="Whether the work is open access. Maps to filter=is_oa:true/false.",
+    )
+    has_abstract: bool | None = Field(
+        default=None,
+        description="Whether the work has an abstract. Maps to filter=has_abstract:true.",
+    )
+    language: str | None = Field(
+        default=None,
+        description="Language code, e.g. 'en'. Maps to filter=language:...",
+    )
+    cited_by_count: str | None = Field(
+        default=None,
+        description="Citation count filter, e.g. '>50'. Maps to filter=cited_by_count:...",
+    )
+
+
 class OAPayloadSchema(BaseModel):
-    search: str = Field(description="Search query string for OpenAlex.")
-    filter: str = Field(
-        description="OpenAlex filter string, e.g. 'publication_year:>=2022'."
+    search: str | None = Field(
+        default=None,
+        description=(
+            "Full-text search query (BM25 keyword matching). Words are ANDed by default. "
+            "Use quotes for exact phrases: '\"object hallucination\"'. "
+            "Prefer short, focused keyword combinations over long sentences. "
+            "Leave null if using filter-based search only."
+        ),
+    )
+    filter: OAFilterSchema = Field(
+        default_factory=OAFilterSchema,
+        description=(
+            "Structured filter fields for OpenAlex. All non-null fields are "
+            "combined with AND. Use these for precise filtering by venue, "
+            "author, year, type, etc."
+        ),
+    )
+    sort: str | None = Field(
+        default=None,
+        description=(
+            "Sort order, e.g. 'relevance_score:desc' (default when search is used), "
+            "'cited_by_count:desc', 'publication_date:desc'."
+        ),
+    )
+    per_page: int = Field(
+        default=25,
+        ge=1,
+        le=200,
+        description="Number of results per page (max 200).",
     )
 
 

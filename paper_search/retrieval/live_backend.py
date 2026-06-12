@@ -5,7 +5,7 @@ import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from ..budget import BudgetController
 from ..cache import CacheStore
@@ -14,6 +14,9 @@ from .arxiv import search_arxiv, search_arxiv_by_title
 from .dblp import search_dblp, search_dblp_by_title
 from .openalex import search_works, search_works_by_title
 from .semantic_scholar import search_papers, search_papers_by_title
+
+if TYPE_CHECKING:
+    from ..schemas import OAFilterSchema
 
 logger = logging.getLogger(__name__)
 
@@ -68,12 +71,17 @@ def retrieve_live_papers(query_plan: QueryPlan, cache: CacheStore | None = None,
             oa_payloads = query_plan.api_payload_translation.get("openalex", [])
             if oa_payloads:
                 for entry in oa_payloads:
-                    q_raw = entry.get("search", "")
-                    q = _strip_cjk(q_raw)
-                    if not q or not _has_alpha(q):
+                    oa_kw, oa_filter_obj, oa_sort, oa_pp = _parse_oa_payload(entry, year_from)
+                    if not oa_kw and oa_filter_obj is None:
                         continue
-                    y = _parse_year_from_filter(entry.get("filter"))
-                    oa_callables.append(lambda q=q, y=y: search_works(query=q, year_from=y, per_page=25, cache=cache))
+                    has_any_filter = oa_filter_obj and any(v is not None for v in oa_filter_obj.model_dump().values())
+                    if not oa_kw and not has_any_filter:
+                        continue
+                    oa_callables.append(
+                        lambda kw=oa_kw, fi=oa_filter_obj, so=oa_sort, pp=oa_pp: search_works(
+                            query=kw, oa_filter=fi, sort=so, per_page=pp, cache=cache
+                        )
+                    )
 
         # Fallback: build English queries from semantic_queries when api_payload_translation is empty
         if _is_source_enabled("SEARCH_SOURCE_S2") and not s2_callables:
@@ -82,8 +90,10 @@ def retrieve_live_papers(query_plan: QueryPlan, cache: CacheStore | None = None,
                 s2_callables.append(lambda q=query, y=year_from: search_papers(query=q, year_from=y, limit=20, cache=cache))
         if _is_source_enabled("SEARCH_SOURCE_OA") and not oa_callables:
             english_queries = _build_english_queries(query_plan)
+            from ..schemas import OAFilterSchema
+            fallback_filter = OAFilterSchema(publication_year=f">{year_from - 1}") if year_from else None
             for query in english_queries:
-                oa_callables.append(lambda q=query, y=year_from: search_works(query=q, year_from=y, per_page=25, cache=cache))
+                oa_callables.append(lambda q=query, fi=fallback_filter: search_works(query=q, oa_filter=fi, per_page=25, cache=cache))
 
     # arXiv: use LLM-translated sub_queries directly (same as S2/OA)
     if _is_source_enabled("SEARCH_SOURCE_ARXIV") and not arxiv_callables:
@@ -305,13 +315,53 @@ def _parse_year(year_str: str | None) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def _parse_year_from_filter(filter_str: str | None) -> int | None:
-    """Parse OA filter parameter like 'publication_year:>2022' into an integer."""
-    if not filter_str:
-        return None
-    import re as _re
-    match = _re.search(r"(\d{4})", filter_str)
-    return int(match.group(1)) if match else None
+def _parse_oa_payload(
+    entry: dict[str, Any], default_year_from: int | None
+) -> tuple[str | None, "OAFilterSchema | None", str | None, int]:
+    """Parse an OA payload entry from api_payload_translation.
+
+    Supports both the new structured format (filter as dict with OAFilterSchema
+    fields) and the legacy format (filter as a raw string like
+    'publication_year:>2021').
+
+    Returns (search_query, oa_filter, sort, per_page).
+    """
+    from ..schemas import OAFilterSchema
+
+    # search keyword
+    q_raw = entry.get("search", "")
+    q = _strip_cjk(q_raw) if q_raw else None
+    if q and not _has_alpha(q):
+        q = None
+
+    # sort
+    sort = entry.get("sort")
+
+    # per_page
+    per_page = entry.get("per_page", 25)
+    if not isinstance(per_page, int) or per_page < 1:
+        per_page = 25
+
+    # filter — structured dict or legacy string
+    raw_filter = entry.get("filter")
+    if isinstance(raw_filter, dict):
+        # New structured format — build OAFilterSchema from dict
+        try:
+            oa_filter = OAFilterSchema(**raw_filter)
+        except Exception:
+            logger.warning("OA payload filter parse failed, using fallback year filter")
+            oa_filter = OAFilterSchema(publication_year=f">{default_year_from - 1}" if default_year_from else None)
+    elif isinstance(raw_filter, str) and raw_filter:
+        # Legacy format — extract publication_year expression directly from raw filter string
+        # e.g. "publication_year:>2021" → publication_year=">2021"
+        import re as _re
+        year_match = _re.search(r"publication_year:([^,]+)", raw_filter)
+        oa_filter = OAFilterSchema(publication_year=year_match.group(1) if year_match else None)
+    else:
+        # No filter provided — use default year_from
+        oa_filter = OAFilterSchema(publication_year=f">{default_year_from - 1}" if default_year_from else None)
+
+    return q, oa_filter, sort, per_page
 
 
 def _build_edges(_papers: list[Paper]) -> list[dict[str, Any]]:

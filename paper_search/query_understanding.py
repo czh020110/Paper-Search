@@ -2,12 +2,9 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, TYPE_CHECKING
+from typing import Any
 
 from .contracts import IntentAnalysis, QueryPlan
-
-if TYPE_CHECKING:
-    from .schemas import QueryPlanSchema
 
 logger = logging.getLogger(__name__)
 
@@ -31,17 +28,18 @@ def build_query_plan(query: str, use_llm: bool = False) -> QueryPlan:
                 f"LLM query understanding requested but API key for provider '{provider}' is not set. "
                 "Set the corresponding key in .env.local or run with --backend mock for offline testing."
             )
-        return build_query_plan_llm(query)
+        return _build_query_plan_llm(query)
 
     return _build_query_plan_rules(query)
 
 
-def build_query_plan_llm(query: str) -> QueryPlan:
+def _build_query_plan_llm(query: str) -> QueryPlan:
     """Use LangChain + LLM with ``with_structured_output`` to convert query to QueryPlan.
 
-    The LLM is forced to output JSON conforming to the Pydantic schema —
-    no free-form JSON parsing needed.  Falls back to a rule-based plan
-    when the LLM or structured-output call fails.
+    Internal function — always called through :func:`build_query_plan` which
+    pre-checks the API key.  Raises ``RuntimeError`` when the LLM call or
+    structured-output parsing fails so the caller knows exactly what went wrong
+    instead of silently using a low-quality path.
     """
     from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -58,173 +56,14 @@ def build_query_plan_llm(query: str) -> QueryPlan:
             SystemMessage(content=prompt_text),
             HumanMessage(content="Analyze this query and output the structured result."),
         ])
-        return result.to_query_plan(original_query=query)
-    except Exception:
-        logger.warning("Structured output failed, using rule-based fallback", exc_info=True)
-        return _build_fallback_query_plan(query).to_query_plan(original_query=query)
+    except Exception as e:
+        raise RuntimeError(
+            f"LLM query understanding failed: {e}. "
+            "Check your LLM API key and provider configuration. "
+            "Use --backend mock for offline testing."
+        ) from e
 
-
-
-def _build_fallback_query_plan(query: str) -> QueryPlanSchema:
-    """Build a minimal QueryPlanSchema when LLM output is unparseable.
-
-    Uses heuristic extraction for English paper-name patterns
-    (e.g. ``"BART by Lewis et al."``, ``"the MS^2 DeYong2021 paper"``)
-    to produce higher-quality search terms than the raw query.
-    """
-    from .schemas import (
-        ApiPayloadTranslationSchema,
-        HardFiltersSchema,
-        IntentAnalysisSchema,
-        OAPayloadSchema,
-        QueryExpansionPolicySchema,
-        QueryPlanSchema,
-        RankingSignalsSchema,
-        S2PayloadSchema,
-        SemanticQueriesSchema,
-        YearFilterSchema,
-    )
-
-    # ── Heuristic extraction ──────────────────────────────────────────
-    title_part, author_part, year_hint = _extract_paper_parts(query)
-
-    # Build focused sub-queries from extracted parts
-    if title_part:
-        sub_queries: list[str] = [title_part]
-        if author_part:
-            sub_queries.append(f"{title_part} {author_part}")
-        # Add the original query as a last resort variant
-        if query not in sub_queries:
-            sub_queries.append(query)
-    else:
-        sub_queries = [query, f"{query} paper"]
-
-    # Normalize special symbols for S2/OA search APIs
-    # MS^2 → "MS2 multi-document summarization", etc.
-    sub_queries = [_normalize_search_term(sq) for sq in sub_queries]
-
-    # Ensure at least 3 sub_queries (schema min_length=3)
-    while len(sub_queries) < 3:
-        sub_queries.append(f"{sub_queries[-1]} research")
-
-    core_concepts = [title_part or query]
-    if author_part:
-        core_concepts.append(author_part)
-    core_concepts.append("academic research")
-
-    # ── Year filter ────────────────────────────────────────────────────
-    # When no year is hinted in the query, use a very broad range (2010+)
-    # so we don't accidentally filter out classic papers (BART 2019, etc.).
-    year_value = year_hint or 2010
-    s2_year = f"{year_value}-"
-    oa_year_filter = f"publication_year:>{year_value - 1}"
-
-    return QueryPlanSchema(
-        original_query=query,
-        intent_analysis=IntentAnalysisSchema(
-            domain="Academic Search",
-            query_type="semantic",
-            boundary_note="LLM query understanding failed, using fallback",
-        ),
-        hard_filters=HardFiltersSchema(
-            year=YearFilterSchema(
-                operator=">=",
-                value=year_value,
-                relaxed_window=[year_value, 2026],
-            ),
-        ),
-        ranking_signals=RankingSignalsSchema(
-            preferred_venues=["CVPR", "NeurIPS", "ICLR"],
-            venue_match_mode="fuzzy_match_and_bonus",
-            venue_as_hard_filter=False,
-        ),
-        semantic_queries=SemanticQueriesSchema(
-            core_concepts=(core_concepts + ["literature"])[:6],
-            methodologies=["academic search", "literature retrieval"],
-        ),
-        sub_queries_for_retrieval=sub_queries,
-        query_expansion_policy=QueryExpansionPolicySchema(
-            enabled=True,
-            seed_paper_driven=True,
-            extract_terms_from=["title", "abstract", "keywords"],
-            max_rounds=2,
-        ),
-        api_payload_translation=ApiPayloadTranslationSchema(
-            semantic_scholar=[
-                S2PayloadSchema(query=sq, year=s2_year) for sq in sub_queries
-            ],
-            openalex=[
-                OAPayloadSchema(search=sq, filter=oa_year_filter) for sq in sub_queries
-            ],
-        ),
-    )
-
-
-def _extract_paper_parts(query: str) -> tuple[str, str, int | None]:
-    """Extract paper title, author surname, and year from English queries.
-
-    Handles patterns like:
-      - "BART by Lewis et al."
-      - "the MS^2 DeYong2021 paper"
-      - "the AlphaGeometry paper"
-      - "the paper about the Objaverse dataset"
-      - "the cnn paper"
-      - "SPIKE syntactic search paper"
-
-    Returns (title_part, author_part, year_hint).
-    """
-    q = query.strip()
-    author_part = ""
-    year_hint: int | None = None
-
-    # Extract year from patterns like "DeYong2021" or standalone "2021"
-    year_match = re.search(r"(?:[A-Za-z])(\d{4})|(\d{4})", q)
-    if year_match:
-        y = int(year_match.group(1) or year_match.group(2))
-        if 1990 <= y <= 2026:
-            year_hint = y
-
-    # Pattern 1: "X by Y et al." / "X by Y"
-    by_match = re.match(r"(.+?)\s+by\s+([A-Z][A-Za-z\-]+)", q)
-    if by_match:
-        title_part = by_match.group(1).strip()
-        # Strip leading articles ("a", "the") from title
-        title_part = re.sub(r"^(a|the|an)\s+", "", title_part, flags=re.IGNORECASE)
-        author_part = by_match.group(2).strip()
-        return title_part, author_part, year_hint
-
-    # Pattern 2: "the X AuthorYear paper" / "the X paper" / "the paper about X"
-    the_paper_match = re.match(r"the\s+paper\s+about\s+(.+?)(?:\s+paper)?$", q, re.IGNORECASE)
-    if the_paper_match:
-        return the_paper_match.group(1).strip(), author_part, year_hint
-
-    the_match = re.match(r"the\s+(.+?)\s+paper", q, re.IGNORECASE)
-    if the_match:
-        inner = the_match.group(1).strip()
-        # Split off trailing AuthorYear token (e.g. "DeYong2021")
-        ay_match = re.match(r"(.+?)\s+([A-Z][A-Za-z\-]+\d{4})$", inner)
-        if ay_match:
-            title_part = ay_match.group(1).strip()
-            author_part = re.sub(r"\d{4}$", "", ay_match.group(2)).strip()
-            return title_part, author_part, year_hint
-        # Split off trailing AuthorYear token without year digits (e.g. "fabri2019multinews")
-        ay2_match = re.match(r"(.+?)\s+([A-Z][A-Za-z]+\d{4}[A-Za-z]*)$", inner)
-        if ay2_match:
-            title_part = ay2_match.group(1).strip()
-            author_part = re.sub(r"\d{4}.*$", "", ay2_match.group(2)).strip()
-            return title_part, author_part, year_hint
-        return inner, author_part, year_hint
-
-    # Pattern 3: "X Y paper" (e.g. "SPIKE syntactic search paper")
-    paper_match = re.match(r"(.+?)\s+paper(?:s)?$", q, re.IGNORECASE)
-    if paper_match:
-        inner = paper_match.group(1).strip()
-        # Strip leading articles
-        inner = re.sub(r"^(a|the|an)\s+", "", inner, flags=re.IGNORECASE)
-        return inner, author_part, year_hint
-
-    # Fallback: use the whole query as the title part
-    return q, author_part, year_hint
+    return result.to_query_plan(original_query=query)
 
 
 def _build_query_plan_rules(query: str) -> QueryPlan:
@@ -261,7 +100,10 @@ def _build_query_plan_rules(query: str) -> QueryPlan:
 
     api_payload_translation = {
         "semantic_scholar": [{"query": sub_query, "year": f"{year_value}-"} for sub_query in sub_queries],
-        "openalex": [{"search": sub_query, "filter": f"publication_year:>{year_value - 1}"} for sub_query in sub_queries],
+        "openalex": [
+            {"search": sub_query, "filter": {"publication_year": f">{year_value - 1}"}}
+            for sub_query in sub_queries
+        ],
     }
 
     return QueryPlan(
@@ -285,25 +127,11 @@ def _build_query_plan_rules(query: str) -> QueryPlan:
     )
 
 
-def _normalize_search_term(term: str) -> str:
-    """Normalize special symbols in search terms for better API results.
-
-    S2/OA APIs struggle with symbols like ^, superscripts, etc.
-    E.g. "MS^2" is interpreted as "Multiple Sclerosis" instead of
-    the multi-document summarization paper.
-    """
-    # Only expand the symbol form; avoid double-expanding "MS2" that
-    # was already produced from "MS^2" in a prior step.
-    if "MS^2" in term:
-        return term.replace("MS^2", "MS2 multi-document summarization")
-    return term
-
-
 def _extract_keywords(query: str) -> list[str]:
     """Tokenize and expand keywords for rule-based query understanding.
 
     Only used when ``use_llm=False`` (mock/testing).  The live pipeline
-    always uses :func:`build_query_plan_llm` which produces English keywords
+    always uses the LLM path which produces English keywords
     via LLM translation — no hardcoded mapping is involved in production.
     """
     tokens = [token.strip() for token in re.split(r"[，,、\s]+", query) if token.strip()]

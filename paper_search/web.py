@@ -34,6 +34,7 @@ def _api_key_status() -> dict[str, Any]:
         "llm": bool(os.getenv("OPENAI_API_KEY") or os.getenv("DASHSCOPE_API_KEY") or os.getenv("SILICONFLOW_API_KEY") or os.getenv("ZHIPUAI_API_KEY")),
         "semantic_scholar": bool(os.getenv("SEMANTIC_SCHOLAR_API_KEY")),
         "openalex_mailto": bool(os.getenv("OPENALEX_MAILTO")),
+        "openalex_api_key": bool(os.getenv("OPENALEX_API_KEY")),
         "embedding": bool(os.getenv("EMBEDDING_API_KEY")),
         "reranker": bool(os.getenv("RERANKER_API_KEY")),
     }
@@ -210,6 +211,7 @@ def _config_schema() -> dict[str, dict[str, Any]]:
         "LLM_THINKING": {"type": "select", "default": "none", "options": ["off", "none", "minimal", "low", "medium", "high", "xhigh"]},
         "SEMANTIC_SCHOLAR_API_KEY": {"type": "string", "default": ""},
         "OPENALEX_MAILTO": {"type": "string", "default": ""},
+        "OPENALEX_API_KEY": {"type": "string", "default": ""},
         "SEARCH_SOURCE_S2": {"type": "bool", "default": "true"},
         "SEARCH_SOURCE_OA": {"type": "bool", "default": "true"},
         "SEARCH_SOURCE_ARXIV": {"type": "bool", "default": "true"},
@@ -295,6 +297,7 @@ _CONFIG_HELP: dict[str, str] = {
     "LLM_THINKING": "控制 LLM 思考/推理深度。none=关闭，off=不传参(API默认)，minimal~xhigh=递增推理强度。DashScope 仅支持开/关。",
     "SEMANTIC_SCHOLAR_API_KEY": "S2 API Key（可选）。有 key 可提升速率限制，留空使用公共端点。示例：40字符字符串",
     "OPENALEX_MAILTO": "OpenAlex 礼貌邮箱（可选）。填入邮箱可进入礼貌池获得更稳定服务。示例：your-email@example.com",
+    "OPENALEX_API_KEY": "OpenAlex API Key（可选，推荐）。有 key 可提升配额。获取：https://openalex.org/settings/api",
     "EMBEDDING_PROVIDER": "Embedding 服务提供商。支持 dashscope、siliconflow。留空则跳过路 B 打分。",
     "EMBEDDING_MODEL": "Embedding 模型名称。示例：text-embedding-v4",
     "EMBEDDING_API_KEY": "Embedding API 密钥。示例：sk-...",
@@ -617,7 +620,7 @@ API: <b>LLM_PROVIDER</b> → <b>OPENAI_BASE_URL</b><br>
 
 <b>📡 多源检索</b><br>
 对 sub_queries_for_retrieval 逐条调用 <b>Semantic Scholar</b> + <b>OpenAlex</b> API。<br>
-可选参数: <b>SEMANTIC_SCHOLAR_API_KEY</b>（有 key 提升限速），<b>OPENALEX_MAILTO</b>（礼貌池）<br>
+可选参数: <b>SEMANTIC_SCHOLAR_API_KEY</b>（有 key 提升限速），<b>OPENALEX_MAILTO</b>（礼貌池），<b>OPENALEX_API_KEY</b>（有 key 提升配额）<br>
 navigational 查询 → 标题精确匹配；semantic → 多角度语义扩展；metadata → 优先消费 api_payload_translation<br><br>
 
 <b>❄️ 滚雪球</b><br>
@@ -690,7 +693,7 @@ async function refreshKeyStatus() {
   const d = await r.json();
   const div = document.getElementById('key-status');
   const k = d.keys;
-  div.innerHTML = keyBadge('LLM',k.llm) + keyBadge('S2',k.semantic_scholar) + keyBadge('OA mailto',k.openalex_mailto) + keyBadge('Embedding',k.embedding) + keyBadge('Reranker',k.reranker);
+  div.innerHTML = keyBadge('LLM',k.llm) + keyBadge('S2',k.semantic_scholar) + keyBadge('OA mailto',k.openalex_mailto) + keyBadge('OA key',k.openalex_api_key) + keyBadge('Embedding',k.embedding) + keyBadge('Reranker',k.reranker);
 }
 
 // Build stage indicator HTML
@@ -775,7 +778,7 @@ async function doSearch() {
   evtSource.addEventListener('keys', function(e) {
     const k = JSON.parse(e.data);
     const div = document.getElementById('key-status');
-    div.innerHTML = keyBadge('LLM',k.llm) + keyBadge('S2',k.semantic_scholar) + keyBadge('OA mailto',k.openalex_mailto) + keyBadge('Embedding',k.embedding) + keyBadge('Reranker',k.reranker);
+    div.innerHTML = keyBadge('LLM',k.llm) + keyBadge('S2',k.semantic_scholar) + keyBadge('OA mailto',k.openalex_mailto) + keyBadge('OA key',k.openalex_api_key) + keyBadge('Embedding',k.embedding) + keyBadge('Reranker',k.reranker);
   });
 
   evtSource.addEventListener('progress', function(e) {
@@ -1097,6 +1100,7 @@ function testS2() {
 function testOA() {
   _callTest('/api/test/openalex', 'btn-test-oa', {
     mailto: _getFormValue('OPENALEX_MAILTO'),
+    api_key: _getFormValue('OPENALEX_API_KEY'),
   });
 }
 
@@ -1379,7 +1383,8 @@ loadConfig();
 <h3>学术搜索 API</h3>
 <div class="row">
   <div><label>S2 API Key (可选)</label><span class="pwd-wrap"><input id="cfg-SEMANTIC_SCHOLAR_API_KEY" type="password" placeholder="留空使用公共端点"><button type="button" class="pwd-toggle" onclick="toggleApiKey(this)" tabindex="-1"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 11 11 0 0 1 19.876 0 1 1 0 0 1 0 .696 11 11 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg></button></span><button id="btn-test-s2" type="button" class="test-btn test-btn-idle" onclick="testS2()" style="margin-left:4px">测试 S2</button></div>
-  <div><label>OpenAlex 礼貌邮箱 (可选)</label><input id="cfg-OPENALEX_MAILTO" placeholder="your-email@example.com"><button id="btn-test-oa" type="button" class="test-btn test-btn-idle" onclick="testOA()" style="margin-left:4px">测试 OA</button></div>
+  <div><label>OpenAlex 礼貌邮箱 (可选)</label><input id="cfg-OPENALEX_MAILTO" placeholder="your-email@example.com"></div>
+  <div><label>OpenAlex API Key (可选)</label><span class="pwd-wrap"><input id="cfg-OPENALEX_API_KEY" type="password" placeholder="留空使用免费端点"><button type="button" class="pwd-toggle" onclick="toggleApiKey(this)" tabindex="-1"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 11 11 0 0 1 19.876 0 1 1 0 0 1 0 .696 11 11 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg></button></span><button id="btn-test-oa" type="button" class="test-btn test-btn-idle" onclick="testOA()" style="margin-left:4px">测试 OA</button></div>
 </div>
 <div class="row">
   <div><label>arXiv（免费）</label><button id="btn-test-arxiv" type="button" class="test-btn test-btn-idle" onclick="testArxiv()" style="margin-left:4px">测试 arXiv</button></div>
@@ -1744,14 +1749,19 @@ async def test_semantic_scholar(body: dict[str, Any] = Body({})) -> dict[str, An
 
 @app.post("/api/test/openalex", tags=["测试"], summary="测试 OpenAlex API")
 async def test_openalex(body: dict[str, Any] = Body({})) -> dict[str, Any]:
-    """Test OA API using provided (or env) mailto."""
+    """Test OA API using provided (or env) mailto and api_key."""
     try:
         import httpx
+        from urllib.parse import urlencode
 
+        params: dict[str, str] = {"search": "machine learning", "per_page": "1"}
         mailto = body.get("mailto") or os.getenv("OPENALEX_MAILTO")
-        url = "https://api.openalex.org/works?search=machine+learning&per_page=1"
         if mailto:
-            url += f"&mailto={mailto}"
+            params["mailto"] = mailto
+        api_key = body.get("api_key") or os.getenv("OPENALEX_API_KEY")
+        if api_key:
+            params["api_key"] = api_key
+        url = f"https://api.openalex.org/works?{urlencode(params)}"
         resp = httpx.get(url, timeout=15.0)
         resp.raise_for_status()
         data = resp.json()
