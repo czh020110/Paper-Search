@@ -93,7 +93,20 @@ def retrieve_live_papers(query_plan: QueryPlan, cache: CacheStore | None = None,
             for query in english_queries:
                 oa_callables.append(lambda q=query, fi=fallback_filter: search_works(query=q, oa_filter=fi, per_page=25, cache=cache))
 
-    # arXiv: semantic search engine — sub_queries_for_retrieval serves as intent summary
+    # arXiv: structured field-prefix search via api_payload_translation
+    if _is_source_enabled("SEARCH_SOURCE_ARXIV") and not arxiv_callables:
+        arxiv_payloads = query_plan.api_payload_translation.get("arxiv", [])
+        if arxiv_payloads:
+            for entry in arxiv_payloads:
+                sq, sb, so, mr = _parse_arxiv_payload(entry, year_from)
+                if not sq:
+                    continue
+                arxiv_callables.append(
+                    lambda q=sq, b=sb, o=so, r=mr: search_arxiv(
+                        search_query=q, max_results=r, sort_by=b, sort_order=o
+                    )
+                )
+    # Fallback: use sub_queries_for_retrieval as all:query
     if _is_source_enabled("SEARCH_SOURCE_ARXIV") and not arxiv_callables:
         for query in (query_plan.sub_queries_for_retrieval or [query_plan.original_query]):
             arxiv_callables.append(lambda q=query: search_arxiv(query=q, max_results=20))
@@ -431,6 +444,64 @@ def _parse_s2_payload(entry: dict[str, Any], default_year_from: int | None) -> "
     except Exception as exc:
         logger.warning("S2 payload parse failed (%s), using query + year fallback", exc)
         return S2PayloadSchema(query=q, year=year)
+
+
+def _normalize_arxiv_date(raw: Any) -> str | None:
+    """Normalize an arXiv date value to YYYYMMDD format.
+
+    Accepts YYYYMMDD, YYYY-MM-DD, or YYYYMMDDTTTT. Returns YYYYMMDD or None.
+    Validates that the resulting date is a legitimate calendar date.
+    """
+    if not raw or not isinstance(raw, str):
+        return None
+    cleaned = raw.replace("-", "").strip()[:8]
+    if len(cleaned) == 8 and cleaned.isdigit():
+        from datetime import datetime as _dt
+        try:
+            _dt.strptime(cleaned, "%Y%m%d")
+            return cleaned
+        except ValueError:
+            logger.warning("Invalid arXiv date: %s", raw)
+            return None
+    return None
+
+
+def _parse_arxiv_payload(
+    entry: dict[str, Any], default_year_from: int | None
+) -> tuple[str, str, str, int]:
+    """Parse an arXiv payload entry from api_payload_translation.
+
+    Returns (search_query, sort_by, sort_order, max_results).
+    Category and submittedDate are already baked into search_query.
+    """
+    sq_raw = entry.get("search_query", "")
+    sq = _strip_cjk(sq_raw) if sq_raw else ""
+    if not sq or not _has_alpha(sq):
+        return ("", "relevance", "descending", 20)
+
+    # Append category to search_query only if no cat: prefix already present
+    cat = entry.get("category")
+    if cat and "cat:" not in sq:
+        sq = f"{sq} AND cat:{cat}"
+
+    # submittedDate filtering: append to search_query
+    # Normalize date format: strip hyphens, validate YYYYMMDD
+    sdf = _normalize_arxiv_date(entry.get("submitted_date_from"))
+    sdt = _normalize_arxiv_date(entry.get("submitted_date_to"))
+    if sdf and sdt:
+        sq = f"{sq} AND submittedDate:[{sdf}0000+TO+{sdt}2359]"
+    elif sdf:
+        sq = f"{sq} AND submittedDate:[{sdf}0000+TO+299912312359]"
+    elif default_year_from:
+        sq = f"{sq} AND submittedDate:[{default_year_from}01010000+TO+299912312359]"
+
+    sort_by = entry.get("sort_by", "relevance")
+    sort_order = entry.get("sort_order", "descending")
+    max_results = entry.get("max_results", 20)
+    if not isinstance(max_results, int) or max_results < 1:
+        max_results = 20
+
+    return (sq, sort_by, sort_order, max_results)
 
 
 def _build_edges(papers: list[Paper]) -> list[dict[str, Any]]:

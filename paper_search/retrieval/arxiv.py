@@ -11,7 +11,6 @@ import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlencode
 from xml.etree import ElementTree as ET
 
 import httpx
@@ -29,31 +28,51 @@ MAX_RETRIES = 1  # single attempt; arXiv is slow, don't block pipeline
 RETRY_BACKOFF = 1.0
 
 
-def search_arxiv(query: str, max_results: int = 20, year_from: int | None = None) -> list[Paper]:
+def search_arxiv(
+    query: str | None = None,
+    search_query: str | None = None,
+    max_results: int = 20,
+    sort_by: str = "relevance",
+    sort_order: str = "descending",
+    year_from: int | None = None,
+) -> list[Paper]:
     """Search arXiv papers via the public API.
 
-    Returns a list of Paper objects parsed from the Atom XML response.
-    """
-    _ = year_from  # arXiv API doesn't support year filtering; kept for interface consistency
-    params: dict[str, Any] = {
-        "search_query": f"all:{query}",
-        "max_results": max_results,
-        "sortBy": "relevance",
-        "sortOrder": "descending",
-    }
+    Two mutually exclusive modes:
+    - *query*: plain keyword → ``all:{query}`` (backward compatible)
+    - *search_query*: structured query with field prefixes like
+      ``ti:hallucination AND cat:cs.CV`` (preferred for live retrieval)
 
-    url = f"{ARXIV_BASE_URL}?{urlencode(params)}"
+    If both are provided, *search_query* takes precedence.
+    """
+    if search_query:
+        final_query = search_query
+    elif query:
+        final_query = f"all:{query}"
+    else:
+        return []
+
+    _ = year_from  # kept for interface consistency; date filtering is via search_query
+    # arXiv API requires literal '+' for AND and TO — urlencode breaks this
+    # by encoding '+' as '%2B'. Use manual URL construction instead.
+    url = (
+        f"{ARXIV_BASE_URL}?"
+        f"search_query={_quote_arxiv_query(final_query)}"
+        f"&max_results={max_results}"
+        f"&sortBy={sort_by}"
+        f"&sortOrder={sort_order}"
+    )
     payload = _request_with_retry(url)
     return _parse_atom_response(payload, source_api="arxiv")
 
 
 def search_arxiv_by_title(title: str, max_results: int = 5) -> list[Paper]:
     """Search arXiv by title (ti: field)."""
-    params: dict[str, Any] = {
-        "search_query": f"ti:{title}",
-        "max_results": max_results,
-    }
-    url = f"{ARXIV_BASE_URL}?{urlencode(params)}"
+    url = (
+        f"{ARXIV_BASE_URL}?"
+        f"search_query={_quote_arxiv_query(f'ti:{title}')}"
+        f"&max_results={max_results}"
+    )
     payload = _request_with_retry(url)
     return _parse_atom_response(payload, source_api="arxiv")
 
@@ -197,3 +216,17 @@ def _clean_xml_text(text: str | None) -> str:
     text = text.replace("\n", " ").replace("\r", " ")
     text = re.sub(r"\s+", " ", text)
     return text.strip()
+
+
+def _quote_arxiv_query(query: str) -> str:
+    """URL-encode an arXiv search_query, preserving arXiv syntax characters.
+
+    arXiv API uses '+' as AND separator, '[]' for date ranges, '()' for
+    boolean grouping, '"' for exact phrases, ':' for field prefixes,
+    and '*' for wildcards.  ``urlencode`` would encode these, breaking
+    the query.
+    """
+    from urllib.parse import quote
+    query_with_plus = query.replace(" ", "+")
+    encoded = quote(query_with_plus, safe="+[]:()*\"")
+    return encoded

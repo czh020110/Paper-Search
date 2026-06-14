@@ -301,6 +301,66 @@ class OAPayloadSchema(BaseModel):
     )
 
 
+class ArxivPayloadSchema(BaseModel):
+    """Structured query payload for arXiv API.
+
+    arXiv supports field-prefix search (ti:, abs:, au:, cat:),
+    boolean operators (AND/OR/ANDNOT), and submittedDate filtering.
+    """
+
+    search_query: str = Field(
+        description=(
+            "Structured arXiv query using field prefixes and boolean operators. "
+            "Use ti: for title terms, abs: for abstract terms, au: for author, "
+            "cat: for arXiv category (e.g. cs.CV, cs.CL, cs.AI, cs.LG). "
+            "Use AND/OR/ANDNOT for boolean logic. "
+            "Examples: 'ti:hallucination AND abs:reinforcement learning', "
+            "'abs:object detection AND cat:cs.CV', "
+            "'ti:RLHF AND abs:alignment AND cat:cs.CL'. "
+            "Do NOT use 'all:' prefix — use specific field prefixes for precision."
+        ),
+    )
+    submitted_date_from: str | None = Field(
+        default=None,
+        description=(
+            "Start date for submittedDate filter (YYYYMMDD format). "
+            "E.g. '20220101' for papers submitted since 2022. "
+            "Leave null if no date filter needed."
+        ),
+    )
+    submitted_date_to: str | None = Field(
+        default=None,
+        description=(
+            "End date for submittedDate filter (YYYYMMDD format). "
+            "Leave null for open-ended (up to now)."
+        ),
+    )
+    category: str | None = Field(
+        default=None,
+        description=(
+            "arXiv category to filter by, e.g. 'cs.CV', 'cs.CL', 'cs.AI'. "
+            "If set, will be appended as AND cat:<value> to search_query "
+            "(only if cat: is not already present in search_query). "
+            "If you already included cat: in search_query, leave this null. "
+            "Only set if the query clearly maps to a specific arXiv category."
+        ),
+    )
+    sort_by: str = Field(
+        default="relevance",
+        description="Sort criterion: 'relevance', 'submittedDate', or 'lastUpdatedDate'.",
+    )
+    sort_order: str = Field(
+        default="descending",
+        description="Sort direction: 'ascending' or 'descending'.",
+    )
+    max_results: int = Field(
+        default=20,
+        ge=1,
+        le=100,
+        description="Maximum number of results to return.",
+    )
+
+
 class ApiPayloadTranslationSchema(BaseModel):
     semantic_scholar: list[S2PayloadSchema] = Field(
         min_length=1,
@@ -310,8 +370,7 @@ class ApiPayloadTranslationSchema(BaseModel):
             "S2 supports natural language queries, AND/OR/NOT syntax, and structured "
             "filters (venue, fieldsOfStudy, minCitationCount). Generate FEWER but "
             "RICH payloads — combine related concepts into single semantic queries "
-            "rather than splitting into many thin searches. "
-            "Count does NOT need to match openalex count."
+            "rather than splitting into many thin searches."
         ),
     )
     openalex: list[OAPayloadSchema] = Field(
@@ -323,7 +382,17 @@ class ApiPayloadTranslationSchema(BaseModel):
             "relevant non-redundant terms (not just 2-3 words — that is too broad). "
             "Use filter fields (publication_year, type, primary_location_source_id) "
             "for structured constraints. Generate 1-3 payloads covering different "
-            "search angles. Count does NOT need to match semantic_scholar count."
+            "search angles."
+        ),
+    )
+    arxiv: list[ArxivPayloadSchema] = Field(
+        default_factory=list,
+        description=(
+            "Search payloads for arXiv API. Each payload uses field prefixes "
+            "(ti:, abs:, cat:, au:) and boolean operators (AND/OR/ANDNOT) for "
+            "structured search. Generate 1-2 payloads targeting arXiv's strength: "
+            "recent preprints with category filtering. "
+            "Leave empty to skip arXiv retrieval."
         ),
     )
 

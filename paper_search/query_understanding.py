@@ -153,9 +153,28 @@ def _build_query_plan_rules(query: str) -> QueryPlan:
                     "filter": {"publication_year": f">{year_value - 1}"},
                 })
 
+    # arXiv payloads: field-prefix search (ti:/abs:/cat:) + submittedDate
+    arxiv_payloads: list[dict[str, Any]] = []
+    if query_type == "navigational":
+        for sub_query in sub_queries:
+            arxiv_payloads.append({"search_query": f"ti:{sub_query}", "max_results": 10})
+    else:
+        core = semantic_queries["core_concepts"]
+        methods = semantic_queries["methodologies"]
+        # Infer arXiv category from venue keywords
+        arxiv_cat = _infer_arxiv_category(query)
+        ti_terms = " AND ".join(f"ti:{kw}" for kw in core[:4])
+        arxiv_payloads.append({
+            "search_query": f"{ti_terms} AND abs:{' '.join(methods[:2])}",
+            "submitted_date_from": f"{year_value}0101",
+            "category": arxiv_cat,
+            "max_results": 20,
+        })
+
     api_payload_translation = {
         "semantic_scholar": [{k: v for k, v in p.items() if v is not None} for p in s2_payloads],
         "openalex": [{k: v for k, v in p.items() if v is not None} for p in oa_payloads],
+        "arxiv": [{k: v for k, v in p.items() if v is not None} for p in arxiv_payloads],
     }
 
     return QueryPlan(
@@ -271,3 +290,34 @@ def _looks_metadata(normalized: str, years: list[int]) -> bool:
     ]
     has_thematic_signal = any(token in normalized for token in thematic_terms)
     return bool(years) and has_structured_signal and not has_thematic_signal
+
+
+# Venue/domain → arXiv category mapping for rules path
+_ARXIV_CATEGORY_MAP = {
+    "cvpr": "cs.CV",
+    "iccv": "cs.CV",
+    "eccv": "cs.CV",
+    "computer vision": "cs.CV",
+    "acl": "cs.CL",
+    "emnlp": "cs.CL",
+    "naacl": "cs.CL",
+    "nlp": "cs.CL",
+    "neurips": "cs.LG",
+    "iclr": "cs.LG",
+    "icml": "cs.LG",
+    "machine learning": "cs.LG",
+    "aaai": "cs.AI",
+    "artificial intelligence": "cs.AI",
+    "robotics": "cs.RO",
+    "icra": "cs.RO",
+    "iros": "cs.RO",
+}
+
+
+def _infer_arxiv_category(query: str) -> str | None:
+    """Infer arXiv category from venue/domain keywords in the query."""
+    normalized = query.lower()
+    for keyword, category in _ARXIV_CATEGORY_MAP.items():
+        if keyword in normalized:
+            return category
+    return None
