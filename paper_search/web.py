@@ -832,7 +832,7 @@ async function doSearch() {
         html += '</div>';
         html += '<div class="badges">';
         html += '<span class="badge ' + relBadge + '">' + esc(rel) + ' / ' + score + '</span>';
-        html += '<span class="badge badge-source">' + esc(p.source_api || '') + '</span>';
+        html += '<span class="badge badge-source">' + esc((p.sources && p.sources.length > 0 ? p.sources.join(', ') : p.source_api) || '') + '</span>';
         if (reason) { html += '<span class="hover-tip"><span class="badge badge-year">理由▾</span><span class="tip-popup"><span class="tip-label">匹配理由</span><br>' + esc(reason) + '</span></span>'; }
         if (contrib) { html += '<span class="hover-tip"><span class="badge badge-year">贡献▾</span><span class="tip-popup"><span class="tip-label">核心贡献</span><br>' + esc(contrib) + '</span></span>'; }
         if (abstract) { html += '<span class="hover-tip"><span class="badge badge-year">摘要▾</span><span class="tip-popup"><span class="tip-label">摘要</span><br>' + esc(abstract) + '</span></span>'; }

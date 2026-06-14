@@ -58,6 +58,12 @@ def _merge_paper(primary: Paper, candidate: Paper) -> Paper:
     for key, value in candidate.source_ids.items():
         if value and not primary.source_ids.get(key):
             primary.source_ids[key] = value
+    # Merge sources: deduplicated, preserving order (primary first)
+    merged_sources = list(primary.sources)
+    for s in candidate.sources:
+        if s not in merged_sources:
+            merged_sources.append(s)
+    primary.sources = merged_sources
     if len(candidate.fields) > len(primary.fields):
         primary.fields = candidate.fields
     if len(candidate.topics) > len(primary.topics):
@@ -65,8 +71,12 @@ def _merge_paper(primary: Paper, candidate: Paper) -> Paper:
     return primary
 
 
-def _normalize_title(title: str) -> str:
+def normalize_title(title: str) -> str:
     return re.sub(r"[^a-z0-9一-鿿]+", "", title.lower().strip())
+
+
+def _normalize_title(title: str) -> str:
+    return normalize_title(title)
 
 
 def _with_prefix(prefix: str, value: str | None) -> str | None:

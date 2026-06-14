@@ -43,6 +43,7 @@ class Paper:
     citation_count: int | None = None
     reference_count: int | None = None
     source_api: str = "mock"
+    sources: list[str] = field(default_factory=list)
     retrieved_at: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
     pool_status: str = "seed"

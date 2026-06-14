@@ -16,6 +16,7 @@ from .evaluation import evaluate_query
 from .logging_config import setup_logging
 from .pool import CandidatePool
 from .query_understanding import build_query_plan
+from .retrieval.enrichment import enrich_papers
 from .retrieval.live_backend import retrieve_live_papers
 from .retrieval.mock_backend import retrieve_mock_papers
 from .screening.coarse import coarse_score
@@ -69,6 +70,13 @@ def run_pipeline(
     _notify(on_stage, "initial_retrieval", "done")
 
     deduped_papers = _rank_papers(dedupe_papers(retrieved_papers))
+
+    # Enrich papers with missing venue/abstract via cross-source title search
+    if backend == "live":
+        t0 = time.time()
+        deduped_papers = enrich_papers(deduped_papers, cache=cache, budget=budget)
+        timings["enrichment"] = (time.time() - t0) * 1000
+    _notify(on_stage, "enrichment", "done")
 
     pool = CandidatePool()
     for paper in deduped_papers:
@@ -171,6 +179,7 @@ def _paper_node(paper: Paper) -> dict[str, object]:
         "venue": paper.venue,
         "relevance": paper.llm_relevance or "highly_relevant",
         "source_api": paper.source_api,
+        "sources": paper.sources,
         "pool_status": paper.pool_status,
     }
 

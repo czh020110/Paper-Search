@@ -73,11 +73,13 @@ def _append_paper_section(lines: list[str], papers: list[Paper]) -> None:
         relevance_display = paper.llm_relevance or "highly_relevant"
         if paper.reranker_score is not None:
             relevance_display = f"{relevance_display} / {paper.reranker_score:.2f}"
+        sources_display = ", ".join(paper.sources) if paper.sources else paper.source_api
         lines.extend(
             [
                 f"## {paper.title} ({paper.year or 'Unknown'})\n",
                 f"- 作者：{authors}\n",
                 f"- Venue：{paper.venue or 'Unknown'}\n",
+                f"- 来源：{sources_display}\n",
                 f"- 链接：{paper.url or 'N/A'}\n",
                 f"- 相关性：{relevance_display}\n",
                 f"- 匹配理由：{paper.reason or '离线最小闭环暂未生成，当前按 query/venue/topic 命中归入结果集'}\n",

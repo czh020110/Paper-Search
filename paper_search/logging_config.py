@@ -34,6 +34,8 @@ def setup_logging(run_id: str, log_dir: Path, log_level: str = "INFO") -> None:
     Adds a file handler writing ``pipeline.jsonl`` under *log_dir* with
     :class:`JsonFormatter`, and a console handler (stderr) for developer visibility.
     """
+    # run_id is injected into log records via the JsonFormatter above
+    _ = run_id
     log_dir.mkdir(parents=True, exist_ok=True)
 
     pkg_logger = logging.getLogger("paper_search")

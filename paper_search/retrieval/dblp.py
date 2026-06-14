@@ -105,6 +105,8 @@ def _hit_to_paper(info: dict[str, Any], source_api: str) -> Paper | None:
     author_list = authors_raw.get("author") if isinstance(authors_raw, dict) else []
     if isinstance(author_list, str):
         author_list = [author_list]
+    if not isinstance(author_list, list):
+        author_list = []
     authors: list[dict[str, str | None]] = []
     for a in author_list:
         name = _clean_str(a) if isinstance(a, str) else _clean_str(a.get("text", ""))
@@ -161,6 +163,7 @@ def _hit_to_paper(info: dict[str, Any], source_api: str) -> Paper | None:
         citation_count=None,
         reference_count=None,
         source_api=source_api,
+        sources=[source_api],
         retrieved_at=datetime.now(timezone.utc).isoformat(),
         raw=info,
         pool_status="seed",

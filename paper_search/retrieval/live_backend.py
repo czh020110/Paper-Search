@@ -433,8 +433,9 @@ def _parse_s2_payload(entry: dict[str, Any], default_year_from: int | None) -> "
         return S2PayloadSchema(query=q, year=year)
 
 
-def _build_edges(_papers: list[Paper]) -> list[dict[str, Any]]:
+def _build_edges(papers: list[Paper]) -> list[dict[str, Any]]:
     # Citation edges will be populated during the snowball phase (S-005).
     # The initial retrieval stage only produces seed papers; edges are built
     # when references/citations are fetched and filtered for relevance.
+    _ = papers  # kept for future snowball-phase edge extraction
     return []

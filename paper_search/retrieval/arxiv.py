@@ -34,6 +34,7 @@ def search_arxiv(query: str, max_results: int = 20, year_from: int | None = None
 
     Returns a list of Paper objects parsed from the Atom XML response.
     """
+    _ = year_from  # arXiv API doesn't support year filtering; kept for interface consistency
     params: dict[str, Any] = {
         "search_query": f"all:{query}",
         "max_results": max_results,
@@ -133,9 +134,11 @@ def _entry_to_paper(entry: ET.Element, source_api: str) -> Paper | None:
         if match:
             year = int(match.group(1))
 
-    # Venue (from arXiv journal_ref if available)
+    # Venue: prefer journal_ref; fall back to "arXiv"
     journal_ref_el = entry.find("arxiv:journal_ref", _ARXIV_NS)
     venue = _clean_xml_text(journal_ref_el.text if journal_ref_el is not None else "") or None
+    if not venue:
+        venue = "arXiv"
 
     # URL
     url = f"https://arxiv.org/abs/{arxiv_id}"
@@ -180,6 +183,7 @@ def _entry_to_paper(entry: ET.Element, source_api: str) -> Paper | None:
         citation_count=citation_count,
         reference_count=reference_count,
         source_api=source_api,
+        sources=[source_api],
         retrieved_at=datetime.now(timezone.utc).isoformat(),
         raw={},
         pool_status="seed",

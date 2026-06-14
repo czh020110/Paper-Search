@@ -258,6 +258,7 @@ def _paper_from_oa(item: dict[str, Any]) -> Paper:
         citation_count=_optional_int(item.get("cited_by_count")),
         reference_count=_optional_int(item.get("referenced_works_count")),
         source_api="openalex",
+        sources=["openalex"],
         retrieved_at=datetime.now(timezone.utc).isoformat(),
         raw=item,
         pool_status="seed",
@@ -300,10 +301,15 @@ def _oa_venue(primary_location: Any) -> str | None:
     if not isinstance(primary_location, dict):
         return None
     source = primary_location.get("source")
-    if not isinstance(source, dict):
-        return None
-    venue_raw = _optional_str(source.get("display_name"))
-    return _normalize_venue(venue_raw)
+    if isinstance(source, dict):
+        venue_raw = _optional_str(source.get("display_name"))
+        if venue_raw:
+            return _normalize_venue(venue_raw)
+    # OA sometimes has source=null but raw_source_name filled
+    raw_name = _optional_str(primary_location.get("raw_source_name"))
+    if raw_name:
+        return _normalize_venue(raw_name)
+    return None
 
 
 def _best_oa_location(open_access: Any, oa_locations: Any) -> dict[str, Any] | None:

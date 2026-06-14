@@ -7,4 +7,6 @@ VENUE_ALIASES = {
     "iclr": "ICLR",
     "acl": "ACL",
     "emnlp": "EMNLP",
+    # OA returns "arXiv (Cornell University)" as venue
+    "arxiv (cornell university)": "arXiv",
 }

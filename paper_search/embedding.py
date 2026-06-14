@@ -123,7 +123,7 @@ def _dashscope_embed(text: str) -> list[float] | None:
         if _is_multimodal_model(model):
             resp = dashscope.MultiModalEmbedding.call(
                 model=model,
-                input=[{"text": text}],
+                input=[{"text": text}],  # type: ignore[arg-type]
                 api_key=api_key,
             )
         else:

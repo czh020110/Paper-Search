@@ -195,6 +195,7 @@ def _paper_from_s2(item: dict[str, Any]) -> Paper:
         citation_count=_optional_int(item.get("citationCount")),
         reference_count=_optional_int(item.get("referenceCount")),
         source_api="semantic_scholar",
+        sources=["semantic_scholar"],
         retrieved_at=datetime.now(timezone.utc).isoformat(),
         raw=item,
         pool_status="seed",

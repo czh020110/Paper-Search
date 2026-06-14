@@ -47,6 +47,7 @@ def _paper_from_dict(item: dict[str, Any]) -> Paper:
         citation_count=_optional_int(item.get("citation_count")),
         reference_count=_optional_int(item.get("reference_count")),
         source_api=str(item.get("source_api", "mock")),
+        sources=[str(item.get("source_api", "mock"))],
         retrieved_at=_optional_str(item.get("retrieved_at")) or datetime.now(timezone.utc).isoformat(),
         raw=_optional_dict(item.get("raw")) or {},
         pool_status=str(item.get("pool_status", "seed")),
