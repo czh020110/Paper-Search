@@ -93,43 +93,53 @@ def retrieve_live_papers(query_plan: QueryPlan, cache: CacheStore | None = None,
             for query in english_queries:
                 oa_callables.append(lambda q=query, fi=fallback_filter: search_works(query=q, oa_filter=fi, per_page=25, cache=cache))
 
-    # arXiv: structured field-prefix search via api_payload_translation
+    # arXiv: 优先从 api_payload_translation.semantic_scholar 的 query 字段提取搜索词，
+    # 否则 fallback 到 sub_queries_for_retrieval（作为意图摘要）
     if _is_source_enabled("SEARCH_SOURCE_ARXIV") and not arxiv_callables:
-        arxiv_payloads = query_plan.api_payload_translation.get("arxiv", [])
-        if arxiv_payloads:
-            for entry in arxiv_payloads:
-                sq, sb, so, mr = _parse_arxiv_payload(entry, year_from)
-                if not sq:
-                    continue
-                arxiv_callables.append(
-                    lambda q=sq, b=sb, o=so, r=mr: search_arxiv(
-                        search_query=q, max_results=r, sort_by=b, sort_order=o
-                    )
-                )
-    # Fallback: use sub_queries_for_retrieval as all:query
-    if _is_source_enabled("SEARCH_SOURCE_ARXIV") and not arxiv_callables:
-        for query in (query_plan.sub_queries_for_retrieval or [query_plan.original_query]):
-            arxiv_callables.append(lambda q=query: search_arxiv(query=q, max_results=20))
-    # DBLP: title-based exact match — use short keywords (≤3 words) from core_concepts
-    # Long sentence queries ("LLM jailbreak attack methods 2026") return 0 hits.
+        arxiv_s2_payloads = query_plan.api_payload_translation.get("semantic_scholar", [])
+        if arxiv_s2_payloads:
+            # 从 S2 payload 的 query 字段提取搜索词
+            arxiv_queries: list[str] = []
+            for entry in arxiv_s2_payloads:
+                q = _strip_cjk(entry.get("query", ""))
+                if q and _has_alpha(q) and q not in arxiv_queries:
+                    arxiv_queries.append(q)
+            for query in arxiv_queries:
+                arxiv_callables.append(lambda q=query: search_arxiv(query=q, max_results=20))
+        else:
+            for query in (query_plan.sub_queries_for_retrieval or [query_plan.original_query]):
+                arxiv_callables.append(lambda q=query: search_arxiv(query=q, max_results=20))
+    # DBLP title-based exact match: 优先从 api_payload_translation.semantic_scholar 的
+    # query 字段中提取短关键词（≤3 词），否则 fallback 到 core_concepts / sub_queries_for_retrieval
     if _is_source_enabled("SEARCH_SOURCE_DBLP") and not dblp_callables:
-        core = query_plan.semantic_queries.get("core_concepts", [])
+        dblp_s2_payloads = query_plan.api_payload_translation.get("semantic_scholar", [])
         short_kw: list[str] = []
-        for kw in core:
-            wc = len(kw.split())
-            if wc <= 3 and kw not in short_kw:
-                short_kw.append(kw)
+        if dblp_s2_payloads:
+            # 从 S2 payload 的 query 字段提取短关键词
+            for entry in dblp_s2_payloads:
+                q = _strip_cjk(entry.get("query", ""))
+                if not q or not _has_alpha(q):
+                    continue
+                wc = len(q.split())
+                if wc <= 3 and q not in short_kw:
+                    short_kw.append(q)
         if not short_kw:
-            # Fallback: tokenize sub_queries into 1-2 word pairs
+            core = query_plan.semantic_queries.get("core_concepts", [])
+            for kw in core:
+                wc = len(kw.split())
+                if wc <= 3 and kw not in short_kw:
+                    short_kw.append(kw)
+        if not short_kw:
+            # 回退: tokenize sub_queries 为 1-2 词组合
             for sq in (query_plan.sub_queries_for_retrieval or []):
-                tokens = sq.split()[:4]  # first 4 words → up to 2 bigrams
+                tokens = sq.split()[:4]  # 前4词 → 最多2个bigram
                 for i in range(len(tokens) - 1):
                     pair = f"{tokens[i]} {tokens[i + 1]}"
                     if pair not in short_kw:
                         short_kw.append(pair)
                 if len(short_kw) >= 5:
                     break
-        for kw in short_kw[:5]:  # limit to 5 queries for rate-limited free API
+        for kw in short_kw[:5]:  # 对限流免费 API 最多 5 个查询
             dblp_callables.append(lambda q=kw: search_dblp(query=q, max_results=20))
 
     all_papers: list[Paper] = []
@@ -156,16 +166,18 @@ def retrieve_live_papers(query_plan: QueryPlan, cache: CacheStore | None = None,
                     r = db_future.result()
                     if isinstance(r, list):
                         all_papers.extend(r)
-                except Exception:
-                    pass
+                except Exception as e:
+                    # 记录日志而非静默吞掉，便于排查检索异常
+                    logger.warning("DBLP task failed: %s", e, exc_info=True)
             for futures_list in (oa_futures, ax_futures):
                 for future in as_completed(futures_list):
                     try:
                         result = future.result()
                         if isinstance(result, list):
                             all_papers.extend(result)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        # 记录日志而非静默吞掉，便于排查检索异常
+                        logger.warning("Retrieval task failed: %s", e, exc_info=True)
     else:
         # S2 key available → all tasks run in parallel.
         def _call_one(fn: Callable[[], list[Paper]], label: str, idx: int, total: int) -> list[Paper]:
@@ -200,8 +212,9 @@ def retrieve_live_papers(query_plan: QueryPlan, cache: CacheStore | None = None,
                     result = future.result()
                     if isinstance(result, list):
                         all_papers.extend(result)
-                except Exception:
-                    pass
+                except Exception as e:
+                    # 记录日志而非静默吞掉，便于排查检索异常
+                    logger.warning("Parallel retrieval task failed: %s", e, exc_info=True)
 
     edges = _build_edges(all_papers)
     return all_papers, edges
@@ -446,67 +459,83 @@ def _parse_s2_payload(entry: dict[str, Any], default_year_from: int | None) -> "
         return S2PayloadSchema(query=q, year=year)
 
 
-def _normalize_arxiv_date(raw: Any) -> str | None:
-    """Normalize an arXiv date value to YYYYMMDD format.
-
-    Accepts YYYYMMDD, YYYY-MM-DD, or YYYYMMDDTTTT. Returns YYYYMMDD or None.
-    Validates that the resulting date is a legitimate calendar date.
-    """
-    if not raw or not isinstance(raw, str):
-        return None
-    cleaned = raw.replace("-", "").strip()[:8]
-    if len(cleaned) == 8 and cleaned.isdigit():
-        from datetime import datetime as _dt
-        try:
-            _dt.strptime(cleaned, "%Y%m%d")
-            return cleaned
-        except ValueError:
-            logger.warning("Invalid arXiv date: %s", raw)
-            return None
-    return None
-
-
-def _parse_arxiv_payload(
-    entry: dict[str, Any], default_year_from: int | None
-) -> tuple[str, str, str, int]:
-    """Parse an arXiv payload entry from api_payload_translation.
-
-    Returns (search_query, sort_by, sort_order, max_results).
-    Category and submittedDate are already baked into search_query.
-    """
-    sq_raw = entry.get("search_query", "")
-    sq = _strip_cjk(sq_raw) if sq_raw else ""
-    if not sq or not _has_alpha(sq):
-        return ("", "relevance", "descending", 20)
-
-    # Append category to search_query only if no cat: prefix already present
-    cat = entry.get("category")
-    if cat and "cat:" not in sq:
-        sq = f"{sq} AND cat:{cat}"
-
-    # submittedDate filtering: append to search_query
-    # Normalize date format: strip hyphens, validate YYYYMMDD
-    sdf = _normalize_arxiv_date(entry.get("submitted_date_from"))
-    sdt = _normalize_arxiv_date(entry.get("submitted_date_to"))
-    if sdf and sdt:
-        sq = f"{sq} AND submittedDate:[{sdf}0000+TO+{sdt}2359]"
-    elif sdf:
-        sq = f"{sq} AND submittedDate:[{sdf}0000+TO+299912312359]"
-    elif default_year_from:
-        sq = f"{sq} AND submittedDate:[{default_year_from}01010000+TO+299912312359]"
-
-    sort_by = entry.get("sort_by", "relevance")
-    sort_order = entry.get("sort_order", "descending")
-    max_results = entry.get("max_results", 20)
-    if not isinstance(max_results, int) or max_results < 1:
-        max_results = 20
-
-    return (sq, sort_by, sort_order, max_results)
-
-
 def _build_edges(papers: list[Paper]) -> list[dict[str, Any]]:
-    # Citation edges will be populated during the snowball phase (S-005).
-    # The initial retrieval stage only produces seed papers; edges are built
-    # when references/citations are fetched and filtered for relevance.
-    _ = papers  # kept for future snowball-phase edge extraction
-    return []
+    """从 papers 的 raw 字典中提取 S2 的 references/citations ID 信息，构建基础引用边。
+
+    S2 搜索返回的 raw 中可能包含 externalIds、references 字段。
+    references 列表中的每项通常为 {"paperId": "...", ...} 格式，
+    citations 列表中的每项类似。
+    边格式: {source_paper_id, target_paper_id, edge_type, discovered_round}。
+    discovered_round=0 表示初始检索阶段。
+
+    非 S2 来源的论文通常不携带引用列表，跳过即可。
+    """
+    edges: list[dict[str, Any]] = []
+    paper_id_set: set[str] = {p.id for p in papers}
+
+    for paper in papers:
+        raw = paper.raw
+        if not isinstance(raw, dict):
+            continue
+
+        # 仅处理 S2 论文——其他 API 搜索返回不携带引用列表
+        if paper.source_api != "semantic_scholar":
+            continue
+
+        # 从 references 列表构建 "cites" 边 (paper → 被引论文)
+        references = raw.get("references")
+        if isinstance(references, list):
+            for ref_entry in references:
+                if not isinstance(ref_entry, dict):
+                    continue
+                # references 列表中的条目可能是 {"citedPaper": {"paperId": ...}} 或 {"paperId": ...}
+                cited = ref_entry.get("citedPaper") or ref_entry
+                if isinstance(cited, dict):
+                    ref_id = cited.get("paperId")
+                elif isinstance(cited, str):
+                    ref_id = cited
+                else:
+                    continue
+                if ref_id:
+                    target_id = f"semantic_scholar:{ref_id}"
+                    edges.append({
+                        "source_paper_id": paper.id,
+                        "target_paper_id": target_id,
+                        "edge_type": "cites",
+                        "discovered_round": 0,
+                    })
+
+        # 从 citations 列表构建 "cited_by" 边 (引用论文 → paper)
+        citations = raw.get("citations")
+        if isinstance(citations, list):
+            for cite_entry in citations:
+                if not isinstance(cite_entry, dict):
+                    continue
+                citing = cite_entry.get("citingPaper") or cite_entry
+                if isinstance(citing, dict):
+                    cite_id = citing.get("paperId")
+                elif isinstance(citing, str):
+                    cite_id = citing
+                else:
+                    continue
+                if cite_id:
+                    source_id = f"semantic_scholar:{cite_id}"
+                    edges.append({
+                        "source_paper_id": source_id,
+                        "target_paper_id": paper.id,
+                        "edge_type": "cited_by",
+                        "discovered_round": 0,
+                    })
+
+    # 去重：同一 source→target + edge_type 只保留一条
+    seen: set[tuple[str, str, str]] = set()
+    unique_edges: list[dict[str, Any]] = []
+    for edge in edges:
+        key = (edge["source_paper_id"], edge["target_paper_id"], edge["edge_type"])
+        if key not in seen:
+            seen.add(key)
+            unique_edges.append(edge)
+
+    if unique_edges:
+        logger.info("Built %d citation edges from initial retrieval (round=0)", len(unique_edges))
+    return unique_edges

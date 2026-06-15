@@ -206,8 +206,12 @@ def _re_search(state: SnowballState) -> SnowballState:
         try:
             pool.add(paper, status="expanded")
             count_added += 1
-        except Exception:
-            pass  # skip duplicates that got past dedup
+        except (KeyError, ValueError):
+            # 重复论文或数据格式异常属于预期行为，跳过即可
+            pass
+        except Exception as e:
+            # 意外异常（如 pool 内部状态错误）需记录日志便于排查
+            logger.warning("Unexpected error adding paper %s to pool: %s", paper.id, e, exc_info=True)
 
     # Compute overlap ratio
     total_found = len(deduped)
@@ -267,8 +271,12 @@ def _expand_citations(state: SnowballState) -> SnowballState:
                             try:
                                 pool.add(ref, status="expanded")
                                 all_before.add(ref.id)
-                            except Exception:
+                            except (KeyError, ValueError):
+                                # 重复论文属于预期行为，跳过即可
                                 pass
+                            except Exception as e:
+                                # 意外异常需记录日志便于排查
+                                logger.warning("Unexpected error adding S2 citation paper %s: %s", ref.id, e)
                         edges.append({
                             "source_paper_id": paper.id,
                             "target_paper_id": ref.id,
@@ -290,8 +298,12 @@ def _expand_citations(state: SnowballState) -> SnowballState:
                             try:
                                 pool.add(ref, status="expanded")
                                 all_before.add(ref.id)
-                            except Exception:
+                            except (KeyError, ValueError):
+                                # 重复论文属于预期行为，跳过即可
                                 pass
+                            except Exception as e:
+                                # 意外异常需记录日志便于排查
+                                logger.warning("Unexpected error adding OA citation paper %s: %s", ref.id, e)
                         edges.append({
                             "source_paper_id": paper.id,
                             "target_paper_id": ref.id,

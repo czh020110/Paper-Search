@@ -163,29 +163,34 @@ def _fallback_tf_score(query_tokens: list[str], corpus_tokens: list[list[str]]) 
 
 
 def _structure_score(paper: Paper, query_plan: QueryPlan) -> float:
-    """Compute a structure signal score for a paper.
+    """计算论文的结构信号分数，三个子分数各自归一化到 [0,1] 再相加。
 
-    Factors: year proximity to query constraint, venue match bonus,
-    citation count log-normalized.
+    - year: max(0, 1 - gap/20)，gap 为论文年份与查询年份的差距
+    - citation: min(1, log1p(count) / log1p(1000))，引用数经对数压缩后归一化
+    - venue: 1.0 (匹配优选会议/期刊) 或 0.0 (不匹配)
+
+    Returns
+    -------
+    范围 [0, 3]，高分为优。
     """
     score = 0.0
 
-    # Year proximity: prefer papers close to the query year constraint
+    # Year proximity: year_gap=0 → 1.0, gap=10 → 0.5, gap≥20 → 0.0
     year_constraint = _extract_year_constraint(query_plan)
     if paper.year is not None and year_constraint is not None:
         year_gap = abs(paper.year - year_constraint)
-        score += max(0.0, 1.0 - year_gap * 0.1)  # decays by year distance
+        score += max(0.0, 1.0 - year_gap / 20.0)
 
-    # Citation count: log-normalize, cap at 5.0
+    # Citation count: log1p 压缩，基准 1000 引为 1.0
     if paper.citation_count is not None and paper.citation_count > 0:
-        score += min(5.0, math.log1p(paper.citation_count))
+        score += min(1.0, math.log1p(paper.citation_count) / math.log1p(1000.0))
 
-    # Venue match: bonus for matching preferred venues
+    # Venue match: 精准匹配布尔值
     preferred = query_plan.ranking_signals.get("preferred_venues", [])
     venue = (paper.venue or "").lower()
     for pv in preferred:
         if pv.lower() in venue or venue in pv.lower():
-            score += 2.0
+            score += 1.0
             break
 
     return score

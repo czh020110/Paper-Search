@@ -79,6 +79,20 @@ class CacheStore:
         version: str | None = None,
     ) -> None:
         """Write a cached value with optional TTL and version metadata."""
+        # --- 写入前的基本校验 ---
+        if not isinstance(data, dict) or not data:
+            logger.warning(
+                "Cache put skipped: data is %s (expected non-empty dict), domain=%s",
+                type(data).__name__, domain,
+            )
+            return
+        if isinstance(data.get("status_code"), int) and data["status_code"] != 200:
+            logger.warning(
+                "Cache put skipped: status_code=%s (expected 200), domain=%s",
+                data["status_code"], domain,
+            )
+            return
+
         h = self._make_hash(domain, *parts)
         data_path = self.cache_dir / domain / f"{h}.json"
         meta_path = self.cache_dir / domain / f"{h}.meta.json"

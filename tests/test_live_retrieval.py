@@ -175,18 +175,20 @@ class TestSemanticScholarParser(unittest.TestCase):
         self.assertIsNone(paper.open_access_pdf)
         self.assertEqual(paper.fields, [])
 
-    @patch("paper_search.retrieval.semantic_scholar.httpx.get")
-    def test_search_parsers(self, mock_get: MagicMock) -> None:
+    @patch("paper_search.retrieval.semantic_scholar.get_shared_http_client")
+    def test_search_parsers(self, mock_get_client: MagicMock) -> None:
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = S2_SEARCH_RESPONSE
-        mock_get.return_value = mock_response
+        mock_client = MagicMock()
+        mock_client.get.return_value = mock_response
+        mock_get_client.return_value = mock_client
 
         papers = search_papers(query="reinforcement learning", year_from=2022, limit=20)
 
         self.assertEqual(len(papers), 2)
         self.assertIsInstance(papers[0], Paper)
-        mock_get.assert_called_once()
+        mock_client.get.assert_called_once()
 
 
 class TestOpenAlexParser(unittest.TestCase):
@@ -227,33 +229,39 @@ class TestOpenAlexParser(unittest.TestCase):
         self.assertIsNone(_reconstruct_abstract(None))
         self.assertIsNone(_reconstruct_abstract({}))
 
-    @patch("paper_search.retrieval.openalex.httpx.get")
-    def test_search_works(self, mock_get: MagicMock) -> None:
+    @patch("paper_search.retrieval.openalex.get_shared_http_client")
+    def test_search_works(self, mock_get_client: MagicMock) -> None:
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = OA_SEARCH_RESPONSE
-        mock_get.return_value = mock_response
+        mock_client = MagicMock()
+        mock_client.get.return_value = mock_response
+        mock_get_client.return_value = mock_client
 
         papers = search_works(query="vision transformer", year_from=2023, per_page=25)
 
         self.assertEqual(len(papers), 2)
         self.assertIsInstance(papers[0], Paper)
-        mock_get.assert_called_once()
+        mock_client.get.assert_called_once()
 
 
 class TestLiveBackendIntegration(unittest.TestCase):
-    @patch("paper_search.retrieval.semantic_scholar.httpx.get")
-    @patch("paper_search.retrieval.openalex.httpx.get")
-    def test_retrieve_live_papers_semantic(self, mock_oa_get: MagicMock, mock_s2_get: MagicMock) -> None:
+    @patch("paper_search.retrieval.semantic_scholar.get_shared_http_client")
+    @patch("paper_search.retrieval.openalex.get_shared_http_client")
+    def test_retrieve_live_papers_semantic(self, mock_oa_client: MagicMock, mock_s2_client: MagicMock) -> None:
         s2_response = MagicMock()
         s2_response.status_code = 200
         s2_response.json.return_value = S2_SEARCH_RESPONSE
-        mock_s2_get.return_value = s2_response
+        s2_mock_client = MagicMock()
+        s2_mock_client.get.return_value = s2_response
+        mock_s2_client.return_value = s2_mock_client
 
         oa_response = MagicMock()
         oa_response.status_code = 200
         oa_response.json.return_value = OA_SEARCH_RESPONSE
-        mock_oa_get.return_value = oa_response
+        oa_mock_client = MagicMock()
+        oa_mock_client.get.return_value = oa_response
+        mock_oa_client.return_value = oa_mock_client
 
         query_plan = _make_query_plan("semantic")
         papers, edges = retrieve_live_papers(query_plan)
@@ -261,18 +269,22 @@ class TestLiveBackendIntegration(unittest.TestCase):
         self.assertGreater(len(papers), 0)
         self.assertIsInstance(papers[0], Paper)
 
-    @patch("paper_search.retrieval.semantic_scholar.httpx.get")
-    @patch("paper_search.retrieval.openalex.httpx.get")
-    def test_retrieve_live_papers_navigational(self, mock_oa_get: MagicMock, mock_s2_get: MagicMock) -> None:
+    @patch("paper_search.retrieval.semantic_scholar.get_shared_http_client")
+    @patch("paper_search.retrieval.openalex.get_shared_http_client")
+    def test_retrieve_live_papers_navigational(self, mock_oa_client: MagicMock, mock_s2_client: MagicMock) -> None:
         s2_response = MagicMock()
         s2_response.status_code = 200
         s2_response.json.return_value = S2_SEARCH_RESPONSE
-        mock_s2_get.return_value = s2_response
+        s2_mock_client = MagicMock()
+        s2_mock_client.get.return_value = s2_response
+        mock_s2_client.return_value = s2_mock_client
 
         oa_response = MagicMock()
         oa_response.status_code = 200
         oa_response.json.return_value = OA_SEARCH_RESPONSE
-        mock_oa_get.return_value = oa_response
+        oa_mock_client = MagicMock()
+        oa_mock_client.get.return_value = oa_response
+        mock_oa_client.return_value = oa_mock_client
 
         query_plan = _make_query_plan("navigational")
         papers, edges = retrieve_live_papers(query_plan)
@@ -280,19 +292,23 @@ class TestLiveBackendIntegration(unittest.TestCase):
         self.assertGreater(len(papers), 0)
         self.assertIsInstance(papers[0], Paper)
 
-    @patch("paper_search.retrieval.semantic_scholar.httpx.get")
-    @patch("paper_search.retrieval.openalex.httpx.get")
-    def test_api_payload_translation_consumed(self, mock_oa_get: MagicMock, mock_s2_get: MagicMock) -> None:
+    @patch("paper_search.retrieval.semantic_scholar.get_shared_http_client")
+    @patch("paper_search.retrieval.openalex.get_shared_http_client")
+    def test_api_payload_translation_consumed(self, mock_oa_client: MagicMock, mock_s2_client: MagicMock) -> None:
         """When api_payload_translation is populated, it should be used for API calls."""
         s2_response = MagicMock()
         s2_response.status_code = 200
         s2_response.json.return_value = S2_SEARCH_RESPONSE
-        mock_s2_get.return_value = s2_response
+        s2_mock_client = MagicMock()
+        s2_mock_client.get.return_value = s2_response
+        mock_s2_client.return_value = s2_mock_client
 
         oa_response = MagicMock()
         oa_response.status_code = 200
         oa_response.json.return_value = OA_SEARCH_RESPONSE
-        mock_oa_get.return_value = oa_response
+        oa_mock_client = MagicMock()
+        oa_mock_client.get.return_value = oa_response
+        mock_oa_client.return_value = oa_mock_client
 
         query_plan = _make_query_plan("semantic")
         # The plan has api_payload_translation with 2 S2 entries and 2 OA entries
@@ -302,27 +318,31 @@ class TestLiveBackendIntegration(unittest.TestCase):
         papers, edges = retrieve_live_papers(query_plan)
 
         # Should have called S2 API with payload translation queries
-        self.assertTrue(mock_s2_get.called)
+        self.assertTrue(s2_mock_client.get.called)
         self.assertGreater(len(papers), 0)
 
         # Verify the S2 URL contains the payload translation query
-        first_s2_call = mock_s2_get.call_args_list[0]
+        first_s2_call = s2_mock_client.get.call_args_list[0]
         s2_url = first_s2_call[0][0] if first_s2_call[0] else first_s2_call[1].get("url", "")
         self.assertIn("hallucination", s2_url)
 
-    @patch("paper_search.retrieval.semantic_scholar.httpx.get")
-    @patch("paper_search.retrieval.openalex.httpx.get")
-    def test_fallback_when_payload_empty(self, mock_oa_get: MagicMock, mock_s2_get: MagicMock) -> None:
+    @patch("paper_search.retrieval.semantic_scholar.get_shared_http_client")
+    @patch("paper_search.retrieval.openalex.get_shared_http_client")
+    def test_fallback_when_payload_empty(self, mock_oa_client: MagicMock, mock_s2_client: MagicMock) -> None:
         """When api_payload_translation is empty, should fall back to _build_english_queries."""
         s2_response = MagicMock()
         s2_response.status_code = 200
         s2_response.json.return_value = S2_SEARCH_RESPONSE
-        mock_s2_get.return_value = s2_response
+        s2_mock_client = MagicMock()
+        s2_mock_client.get.return_value = s2_response
+        mock_s2_client.return_value = s2_mock_client
 
         oa_response = MagicMock()
         oa_response.status_code = 200
         oa_response.json.return_value = OA_SEARCH_RESPONSE
-        mock_oa_get.return_value = oa_response
+        oa_mock_client = MagicMock()
+        oa_mock_client.get.return_value = oa_response
+        mock_oa_client.return_value = oa_mock_client
 
         # Create a plan with empty api_payload_translation
         plan = QueryPlan(

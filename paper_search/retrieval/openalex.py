@@ -12,7 +12,7 @@ import httpx
 from ..cache import CacheStore
 from ..contracts import Paper
 from ..errors import classify_httpx_error, is_retryable
-from .shared import VENUE_ALIASES
+from .shared import VENUE_ALIASES, _optional_str, _optional_int, get_shared_http_client
 
 if TYPE_CHECKING:
     from ..schemas import OAFilterSchema
@@ -192,7 +192,8 @@ def _request_with_retry(url: str, cache: CacheStore | None = None) -> dict[str, 
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            response = httpx.get(url, timeout=30.0)
+            client = get_shared_http_client()
+            response = client.get(url, timeout=30.0)
             if response.status_code == 429:
                 wait = RETRY_BACKOFF * attempt
                 logger.warning("OA rate limited (429), retrying in %.1fs (attempt %d/%d)", wait, attempt, MAX_RETRIES)
@@ -350,11 +351,3 @@ def _normalize_doi(doi: str | None) -> str | None:
     if not doi:
         return None
     return doi.removeprefix("https://doi.org/")
-
-
-def _optional_str(value: Any) -> str | None:
-    return value if isinstance(value, str) else None
-
-
-def _optional_int(value: Any) -> int | None:
-    return value if isinstance(value, int) else None

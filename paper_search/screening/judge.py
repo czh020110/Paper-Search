@@ -78,15 +78,16 @@ def _judge_wave(pool: CandidatePool, query_plan: QueryPlan, papers: list[Paper])
                     else:
                         pool.transition(paper.id, "excluded", reason="llm_not_relevant")
                 else:
-                    # LLM failed for this paper → pass through
-                    paper.llm_relevance = "高度相关"
-                    paper.reason = "LLM 判定失败，默认纳入"
+                    # 修复：LLM 失败时默认'部分相关'而非'高度相关'，避免未筛选论文混入核心结果
+                    paper.llm_relevance = "部分相关"
+                    paper.reason = "LLM判定失败，保守纳入"
                     pool.transition(paper.id, "llm_judged", reason="judge_error")
                     pool.transition(paper.id, "selected", reason="judge_error")
             except Exception:
                 logger.warning("Judge failed for paper %s", paper.id, exc_info=True)
-                paper.llm_relevance = "高度相关"
-                paper.reason = "LLM 判定异常，默认纳入"
+                # 修复：LLM 异常时默认'部分相关'而非'高度相关'，避免未筛选论文混入核心结果
+                paper.llm_relevance = "部分相关"
+                paper.reason = "LLM判定异常，保守纳入"
                 pool.transition(paper.id, "llm_judged", reason="judge_error")
                 pool.transition(paper.id, "selected", reason="judge_error")
 

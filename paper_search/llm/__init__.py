@@ -1,7 +1,83 @@
 from __future__ import annotations
 
+import logging
 import os
+import threading
 from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# 修复：Token 用量追踪 callback — 修复 token_usage 全 0 的问题
+# ---------------------------------------------------------------------------
+
+
+class TokenUsageCallback:
+    """LangChain callback handler that tracks prompt/completion token usage.
+
+    修复 token_usage 全 0：所有 LLM 调用自动通过此 callback 记录 token 用量，
+    pipeline 阶段汇总到 stage_metrics。
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.prompt_tokens: int = 0
+        self.completion_tokens: int = 0
+
+    def on_llm_end(self, response: Any, **kwargs: Any) -> None:
+        """Extract token usage from LLM response metadata."""
+        try:
+            # LangChain ChatOpenAI 返回 response.llm_output 或 generations[].message
+            llm_output = getattr(response, "llm_output", None)
+            if llm_output and isinstance(llm_output, dict):
+                usage = llm_output.get("token_usage", {})
+                with self._lock:
+                    self.prompt_tokens += usage.get("prompt_tokens", 0) or 0
+                    self.completion_tokens += usage.get("completion_tokens", 0) or 0
+                return
+
+            # Fallback: 从 generations 中提取 response_metadata
+            generations = getattr(response, "generations", [])
+            for gen_list in generations:
+                for gen in gen_list:
+                    meta = getattr(gen, "generation_info", None) or {}
+                    if not meta:
+                        msg = getattr(gen, "message", None)
+                        if msg:
+                            meta = getattr(msg, "response_metadata", {}) or {}
+                    usage = meta.get("token_usage", {}) or meta.get("usage", {})
+                    if usage:
+                        with self._lock:
+                            self.prompt_tokens += usage.get("prompt_tokens", 0) or 0
+                            self.completion_tokens += usage.get("completion_tokens", 0) or 0
+                        return
+        except Exception:
+            logger.debug("TokenUsageCallback: failed to extract token usage", exc_info=True)
+
+    def get_usage(self) -> dict[str, int]:
+        """Return current token usage summary."""
+        with self._lock:
+            return {
+                "prompt": self.prompt_tokens,
+                "completion": self.completion_tokens,
+                "total": self.prompt_tokens + self.completion_tokens,
+            }
+
+    def reset(self) -> None:
+        """Reset token counters."""
+        with self._lock:
+            self.prompt_tokens = 0
+            self.completion_tokens = 0
+
+
+# 模块级全局 callback 实例，所有 LLM 调用共享
+_token_callback = TokenUsageCallback()
+
+
+def get_token_callback() -> TokenUsageCallback:
+    """Return the global token usage callback instance."""
+    return _token_callback
 
 # Thinking budget presets — provider-agnostic.
 # Each provider maps these to its native parameter.
@@ -137,6 +213,7 @@ def get_llm(model: str | None = None, temperature: float = 0.0) -> Any:
             temperature=temperature,
             api_key=api_key,  # type: ignore[arg-type]
             base_url=api_base,
+            callbacks=[_token_callback],  # 修复：注入 token 用量追踪 callback
         )
         if enable_thinking is not None:
             kwargs_ds["extra_body"] = {"enable_thinking": enable_thinking}
@@ -149,6 +226,7 @@ def get_llm(model: str | None = None, temperature: float = 0.0) -> Any:
         temperature=temperature,
         api_key=api_key,  # type: ignore[arg-type]
         base_url=api_base,
+        callbacks=[_token_callback],  # 修复：注入 token 用量追踪 callback
     )
     if reasoning is not None:
         kwargs["reasoning_effort"] = reasoning

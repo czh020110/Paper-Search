@@ -15,6 +15,7 @@ from urllib.parse import urlencode
 import httpx
 
 from ..contracts import Paper
+from .shared import get_shared_http_client
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,8 @@ def _request_with_retry(url: str) -> dict[str, Any]:
     """Fetch JSON response with retry logic."""
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            response = httpx.get(url, timeout=15.0)
+            client = get_shared_http_client()
+            response = client.get(url, timeout=15.0)
             response.raise_for_status()
             return response.json()
         except (httpx.HTTPStatusError, httpx.RequestError) as e:

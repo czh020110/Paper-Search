@@ -45,15 +45,21 @@ def get_embedding(text: str) -> list[float] | None:
 
 
 def batch_embeddings(texts: list[str]) -> list[list[float] | None]:
-    """Return embedding vectors for a batch of texts via concurrent single-text calls."""
+    """Return embedding vectors for a batch of texts via true batch API calls.
+
+    修复：将原来的逐条并发调用改为真正的 batch API 调用。
+    DashScope TextEmbedding.call 原生支持 input=list[str] 批量提交；
+    SiliconFlow OpenAI-compatible API 支持 input=list[str] 批量提交。
+    每批最多 25 条，超出部分自动分批。
+    """
     provider = os.getenv("EMBEDDING_PROVIDER", "")
     if not provider:
         return [None] * len(texts)
 
     if provider == "dashscope":
-        return _dashscope_concurrent_embed(texts)
+        return _dashscope_batch_embed(texts)
     elif provider == "siliconflow":
-        return _siliconflow_concurrent_embed(texts)
+        return _siliconflow_batch_embed(texts)
     else:
         return [None] * len(texts)
 
@@ -147,6 +153,9 @@ def _dashscope_concurrent_embed(texts: list[str]) -> list[list[float] | None]:
 
     Each call to ``executor.submit`` is gated by a token-bucket rate
     limiter so the submission rate never exceeds the API quota.
+
+    注意：此方法为逐条并发调用，已被 _dashscope_batch_embed 替代。
+    保留以兼容旧版调用方。
     """
     results: list[list[float] | None] = [None] * len(texts)
 
@@ -168,6 +177,69 @@ def _dashscope_concurrent_embed(texts: list[str]) -> list[list[float] | None]:
     ok = sum(1 for r in results if r is not None)
     if ok < len(texts):
         logger.info("Embedding: %d/%d succeeded", ok, len(texts))
+    return results
+
+
+# 修复：DashScope 真正的 batch API 调用（每批最多 25 条）
+_DASHSCOPE_BATCH_SIZE = 25
+
+
+def _dashscope_batch_embed(texts: list[str]) -> list[list[float] | None]:
+    """使用 DashScope TextEmbedding.call 的原生 batch 模式嵌入文本。
+
+    修复：每批最多 25 条同时提交，减少 API 调用次数。
+    DashScope TextEmbedding.call 的 input 参数原生支持 list[str]。
+    """
+    import dashscope
+    from http import HTTPStatus
+
+    api_key = os.getenv("EMBEDDING_API_KEY")
+    model = os.getenv("EMBEDDING_MODEL", "text-embedding-v4")
+    if not api_key:
+        logger.warning("EMBEDDING_API_KEY not configured")
+        return [None] * len(texts)
+
+    results: list[list[float] | None] = [None] * len(texts)
+
+    for batch_start in range(0, len(texts), _DASHSCOPE_BATCH_SIZE):
+        batch = texts[batch_start:batch_start + _DASHSCOPE_BATCH_SIZE]
+        _embedding_limiter.acquire()
+        try:
+            if _is_multimodal_model(model):
+                # 多模态模型：逐条调用（API 不支持 batch）
+                for i, text in enumerate(batch):
+                    try:
+                        resp = dashscope.MultiModalEmbedding.call(
+                            model=model,
+                            input=[{"text": text}],
+                            api_key=api_key,
+                        )
+                        if resp.status_code == HTTPStatus.OK:
+                            embeddings = resp.output.get("embeddings", [])
+                            if embeddings:
+                                results[batch_start + i] = list(embeddings[0].get("embedding", []))
+                    except Exception:
+                        logger.warning("DashScope multimodal embedding failed for batch item %d", batch_start + i, exc_info=True)
+            else:
+                # 纯文本模型：原生 batch API 调用
+                resp = dashscope.TextEmbedding.call(
+                    model=model,
+                    input=batch,  # 传入 list[str] 启用 batch 模式
+                    api_key=api_key,
+                )
+                if resp.status_code == HTTPStatus.OK:
+                    batch_embeddings_list = resp.output.get("embeddings", [])
+                    for i, emb_data in enumerate(batch_embeddings_list):
+                        if i < len(batch):
+                            results[batch_start + i] = list(emb_data.get("embedding", []))
+                else:
+                    logger.error("DashScope batch embedding failed: %s - %s", resp.status_code, resp.message)
+        except Exception:
+            logger.error("DashScope batch embedding call failed (batch start=%d)", batch_start, exc_info=True)
+
+    ok = sum(1 for r in results if r is not None)
+    if ok < len(texts):
+        logger.info("DashScope batch embedding: %d/%d succeeded", ok, len(texts))
     return results
 
 
@@ -209,7 +281,11 @@ def _siliconflow_embed(text: str) -> list[float] | None:
 
 
 def _siliconflow_concurrent_embed(texts: list[str]) -> list[list[float] | None]:
-    """Embed all texts concurrently, rate-limited to *EMBEDDING_RPS_LIMIT*."""
+    """Embed all texts concurrently, rate-limited to *EMBEDDING_RPS_LIMIT*.
+
+    注意：此方法为逐条并发调用，已被 _siliconflow_batch_embed 替代。
+    保留以兼容旧版调用方。
+    """
     results: list[list[float] | None] = [None] * len(texts)
 
     def _embed_one(index: int, text: str) -> tuple[int, list[float] | None]:
@@ -230,4 +306,52 @@ def _siliconflow_concurrent_embed(texts: list[str]) -> list[list[float] | None]:
     ok = sum(1 for r in results if r is not None)
     if ok < len(texts):
         logger.info("Embedding: %d/%d succeeded", ok, len(texts))
+    return results
+
+
+# 修复：SiliconFlow 真正的 batch API 调用（每批最多 25 条）
+_SILICONFLOW_BATCH_SIZE = 25
+
+
+def _siliconflow_batch_embed(texts: list[str]) -> list[list[float] | None]:
+    """使用 SiliconFlow OpenAI-compatible API 的 batch 模式嵌入文本。
+
+    修复：每批最多 25 条同时提交，减少 API 调用次数。
+    SiliconFlow embedding API 的 input 参数原生支持 list[str]。
+    """
+    api_key = os.getenv("EMBEDDING_API_KEY")
+    model = os.getenv("EMBEDDING_MODEL", "BAAI/bge-large-zh-v1.5")
+    if not api_key:
+        logger.warning("EMBEDDING_API_KEY not configured")
+        return [None] * len(texts)
+
+    results: list[list[float] | None] = [None] * len(texts)
+
+    for batch_start in range(0, len(texts), _SILICONFLOW_BATCH_SIZE):
+        batch = texts[batch_start:batch_start + _SILICONFLOW_BATCH_SIZE]
+        _embedding_limiter.acquire()
+        try:
+            resp = httpx.post(
+                _SILICONFLOW_EMBED_URL,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={"model": model, "input": batch},  # 传入 list[str] 启用 batch 模式
+                timeout=60.0,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                items = data.get("data", [])
+                for i, item in enumerate(items):
+                    if i < len(batch):
+                        results[batch_start + i] = list(item.get("embedding", []))
+            else:
+                logger.error("SiliconFlow batch embedding failed: %s %s", resp.status_code, resp.text[:200])
+        except Exception:
+            logger.error("SiliconFlow batch embedding call failed (batch start=%d)", batch_start, exc_info=True)
+
+    ok = sum(1 for r in results if r is not None)
+    if ok < len(texts):
+        logger.info("SiliconFlow batch embedding: %d/%d succeeded", ok, len(texts))
     return results

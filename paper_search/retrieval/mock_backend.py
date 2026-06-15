@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from ..contracts import Paper, QueryPlan
-from .shared import VENUE_ALIASES
+from .shared import VENUE_ALIASES, _optional_str, _optional_int, _string_list
 
 
 def retrieve_mock_papers(query_plan: QueryPlan, fixtures_dir: Path) -> tuple[list[Paper], list[dict[str, object]]]:
@@ -102,22 +102,8 @@ def _normalize_text(value: str) -> str:
     return re.sub(r"[^a-z0-9一-鿿]+", "", value.lower())
 
 
-def _optional_str(value: Any) -> str | None:
-    return value if isinstance(value, str) else None
-
-
-def _optional_int(value: Any) -> int | None:
-    return value if isinstance(value, int) else None
-
-
 def _optional_dict(value: Any) -> dict[str, Any] | None:
     return cast(dict[str, Any], value) if isinstance(value, dict) else None
-
-
-def _string_list(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, str)]
 
 
 def _author_list(value: Any) -> list[dict[str, str | None]]:

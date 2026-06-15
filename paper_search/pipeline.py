@@ -138,6 +138,8 @@ def run_pipeline(
         pool_summary=pool.summary(),
         budget_summary=budget.usage_summary(),
         timings=timings,
+        # 修复：汇总 token 用量到 stage_metrics（此前硬编码为全 0）
+        token_usage=None,  # 使用默认值，在 _build_stage_metrics 内部从全局 callback 读取
     )
 
     output_files = _compute_output_file_paths(run_dir)
@@ -202,11 +204,34 @@ def _filter_edges(raw_edges: list[dict[str, object]], node_ids: set[str]) -> lis
 
 
 def _rank_papers(papers: list[Paper]) -> list[Paper]:
-    return sorted(
-        papers,
-        key=lambda paper: (paper.year or 0, paper.citation_count or 0, paper.title.lower()),
-        reverse=True,
-    )
+    """排序候选论文：使用加权综合分 0.3×年份归一化 + 0.7×引用归一化。
+
+    修复：原排序使用 (year, citation_count) 字典序，年份权重过大。
+    改为加权综合分排序，年份和引用数分别归一化到 [0,1] 后按权重融合。
+    """
+    if not papers:
+        return papers
+
+    # 提取年份和引用数范围
+    years = [p.year for p in papers if p.year is not None]
+    citations = [p.citation_count for p in papers if p.citation_count is not None]
+
+    year_min = min(years) if years else 0
+    year_max = max(years) if years else 0
+    year_range = year_max - year_min if year_max > year_min else 1
+
+    cit_min = min(citations) if citations else 0
+    cit_max = max(citations) if citations else 0
+    cit_range = cit_max - cit_min if cit_max > cit_min else 1
+
+    def _score(paper: Paper) -> float:
+        # 年份归一化：越新分数越高
+        year_norm = (paper.year - year_min) / year_range if paper.year is not None else 0.0
+        # 引用归一化：引用越多分数越高
+        cit_norm = (paper.citation_count - cit_min) / cit_range if paper.citation_count is not None else 0.0
+        return 0.3 * year_norm + 0.7 * cit_norm
+
+    return sorted(papers, key=_score, reverse=True)
 
 
 def _rank_by_relevance(papers: list[Paper]) -> list[Paper]:
@@ -246,10 +271,18 @@ def _build_stage_metrics(
     pool_summary: dict[str, int] | None = None,
     budget_summary: dict[str, Any] | None = None,
     timings: dict[str, float] | None = None,
+    token_usage: dict[str, int] | None = None,
 ) -> dict[str, object]:
     api_calls = budget_summary.get("api_calls_used", 0) if budget_summary else 0
     t = timings or {}
     total_ms = sum(t.values())
+    # 修复：从全局 TokenUsageCallback 读取实际 token 用量，而非硬编码全 0
+    if token_usage is None:
+        try:
+            from .llm import get_token_callback
+            token_usage = get_token_callback().get_usage()
+        except Exception:
+            token_usage = {"prompt": 0, "completion": 0, "total": 0}
     return {
         "query_understanding": {
             "latency_ms": round(t.get("query_understanding", 0), 1),
@@ -279,7 +312,8 @@ def _build_stage_metrics(
         "overall": {
             "total_latency_ms": round(total_ms, 1),
             "total_api_calls": api_calls,
-            "total_token_usage": {"prompt": 0, "completion": 0, "total": 0},
+            # 修复：使用实际追踪的 token 用量替代硬编码全 0
+            "total_token_usage": token_usage,
             "precision": evaluation.get("precision"),
             "recall": evaluation.get("recall"),
             "f1": evaluation.get("f1"),

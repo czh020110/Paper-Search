@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -384,6 +385,8 @@ def _write_env(updates: dict[str, str]) -> None:
 
 # ============================ Benchmark Endpoints ============================ #
 
+# 修复：添加 threading.Lock 保护全局状态 _benchmark_running，防止并发请求竞态
+_benchmark_lock = threading.Lock()
 _benchmark_running = False
 _benchmark_result: dict[str, Any] | None = None
 
@@ -391,7 +394,10 @@ _benchmark_result: dict[str, Any] | None = None
 @app.get("/api/benchmark/status", tags=["评测"], summary="评测数据集状态")
 def benchmark_status() -> dict[str, Any]:
     from .benchmark.dataset import dataset_info
-    return {**dataset_info(), "running": _benchmark_running, "has_result": _benchmark_result is not None}
+    with _benchmark_lock:
+        running = _benchmark_running
+        has_result = _benchmark_result is not None
+    return {**dataset_info(), "running": running, "has_result": has_result}
 
 
 @app.post("/api/benchmark/download", tags=["评测"], summary="下载评测数据集")
@@ -407,9 +413,10 @@ def benchmark_download() -> dict[str, Any]:
 @app.post("/api/benchmark/run", tags=["评测"], summary="开始评测")
 async def benchmark_run(body: dict[str, Any] = Body({})) -> dict[str, Any]:
     global _benchmark_running, _benchmark_result
-    if _benchmark_running:
-        return {"ok": False, "message": "评测正在运行中"}
-    _benchmark_running = True
+    with _benchmark_lock:
+        if _benchmark_running:
+            return {"ok": False, "message": "评测正在运行中"}
+        _benchmark_running = True
     try:
         from .benchmark.runner import run_benchmark
         limit = body.get("limit", 0)
@@ -418,7 +425,8 @@ async def benchmark_run(body: dict[str, Any] = Body({})) -> dict[str, Any]:
     except Exception as e:
         return {"ok": False, "message": str(e)[:200]}
     finally:
-        _benchmark_running = False
+        with _benchmark_lock:
+            _benchmark_running = False
 
 
 @app.get("/api/benchmark/results", tags=["评测"], summary="获取最近评测结果")
@@ -1732,9 +1740,11 @@ async def test_semantic_scholar(body: dict[str, Any] = Body({})) -> dict[str, An
             headers: dict[str, str] = {"Accept": "application/json"}
             if api_key:
                 headers["x-api-key"] = api_key
-            print(f"[S2_DEBUG] headers={headers}", flush=True)
+            # 修复：移除 [S2_DEBUG] 调试 print，避免泄露 API Key 到 stdout
+            logger.debug("S2 test request headers keys: %s", list(headers.keys()))
             resp = client.get(url, headers=headers, timeout=15.0)
-            print(f"[S2_DEBUG] status={resp.status_code} headers={dict(resp.headers)} body={resp.text[:200]}", flush=True)
+            # 修复：移除 [S2_DEBUG] 调试 print，避免泄露响应内容到 stdout
+            logger.debug("S2 test response status=%d", resp.status_code)
             resp.raise_for_status()
             data = resp.json()
             total = data.get("total", 0)

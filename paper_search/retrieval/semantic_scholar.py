@@ -12,7 +12,7 @@ import httpx
 from ..cache import CacheStore
 from ..contracts import Paper
 from ..errors import classify_httpx_error, is_retryable
-from .shared import VENUE_ALIASES
+from .shared import VENUE_ALIASES, _optional_str, _optional_int, _string_list, get_shared_http_client
 
 if TYPE_CHECKING:
     from ..schemas import S2PayloadSchema
@@ -128,7 +128,8 @@ def _request_with_retry(url: str, headers: dict[str, str], cache: CacheStore | N
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            response = httpx.get(url, headers=headers, timeout=30.0)
+            client = get_shared_http_client()
+            response = client.get(url, headers=headers, timeout=30.0)
             if response.status_code == 429:
                 wait = RETRY_BACKOFF * attempt
                 logger.warning("S2 rate limited (429), retrying in %.1fs (attempt %d/%d)", wait, attempt, MAX_RETRIES)
@@ -229,17 +230,3 @@ def _s2_author_list(value: Any) -> list[dict[str, str | None]]:
             "id": _optional_str(item.get("authorId")),
         })
     return authors
-
-
-def _optional_str(value: Any) -> str | None:
-    return value if isinstance(value, str) else None
-
-
-def _optional_int(value: Any) -> int | None:
-    return value if isinstance(value, int) else None
-
-
-def _string_list(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, str)]
