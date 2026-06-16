@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import os
 import unittest
 from typing import Any
 from unittest.mock import MagicMock, patch
+from urllib.parse import parse_qs, urlparse
+
+import httpx
 
 from paper_search.contracts import IntentAnalysis, Paper, QueryPlan
+from paper_search.retrieval.dblp import search_dblp
 from paper_search.retrieval.live_backend import retrieve_live_papers
-from paper_search.retrieval.openalex import _paper_from_oa, _reconstruct_abstract, search_works
+from paper_search.retrieval.openalex import _paper_from_oa, _reconstruct_abstract, search_works, search_works_by_title
 from paper_search.retrieval.semantic_scholar import _paper_from_s2, search_papers
 
 
@@ -244,8 +249,135 @@ class TestOpenAlexParser(unittest.TestCase):
         self.assertIsInstance(papers[0], Paper)
         mock_client.get.assert_called_once()
 
+    @patch("paper_search.retrieval.openalex.get_shared_http_client")
+    def test_search_works_respects_single_page_budget(self, mock_get_client: MagicMock) -> None:
+        first_page = MagicMock()
+        first_page.status_code = 200
+        first_page.json.return_value = {
+            "meta": {"count": 50, "next_cursor": "cursor-2"},
+            "results": [OA_SEARCH_RESPONSE["results"][0]],
+        }
+        mock_client = MagicMock()
+        mock_client.get.return_value = first_page
+        mock_get_client.return_value = mock_client
+
+        papers = search_works(query="vision transformer", year_from=2023, per_page=25)
+
+        self.assertEqual(len(papers), 1)
+        mock_client.get.assert_called_once()
+
+    @patch("paper_search.retrieval.openalex.get_shared_http_client")
+    def test_search_works_by_title_truncates_long_query(self, mock_get_client: MagicMock) -> None:
+        first_page = MagicMock()
+        first_page.status_code = 200
+        first_page.json.return_value = {
+            "meta": {"count": 2, "next_cursor": "cursor-2"},
+            "results": [OA_SEARCH_RESPONSE["results"][0]],
+        }
+        mock_client = MagicMock()
+        mock_client.get.return_value = first_page
+        mock_get_client.return_value = mock_client
+
+        long_title = (
+            "Can language models persuade? Exploring the persuasive efficacy of Large Language and Vision Language "
+            "models with very long suffix to exceed the OpenAlex enrichment query length limit in one raw request"
+        )
+        papers = search_works_by_title(long_title, per_page=3)
+
+        self.assertEqual(len(papers), 1)
+        self.assertEqual(mock_client.get.call_count, 1)
+
+        first_url = mock_client.get.call_args_list[0].args[0]
+        first_params = parse_qs(urlparse(first_url).query)
+
+        first_search = first_params["search"][0]
+        self.assertLessEqual(len(first_search), 120)
+        self.assertLessEqual(len(first_search.split()), 16)
+
+    @patch("paper_search.retrieval.openalex.get_shared_http_client")
+    def test_get_work_citations_uses_next_cursor(self, mock_get_client: MagicMock) -> None:
+        first_page = MagicMock()
+        first_page.status_code = 200
+        first_page.json.return_value = {
+            "meta": {"count": 2, "next_cursor": "cursor-2"},
+            "results": [OA_SEARCH_RESPONSE["results"][0]],
+        }
+        second_page = MagicMock()
+        second_page.status_code = 200
+        second_page.json.return_value = {
+            "meta": {"count": 2, "next_cursor": None},
+            "results": [OA_SEARCH_RESPONSE["results"][1]],
+        }
+        mock_client = MagicMock()
+        mock_client.get.side_effect = [first_page, second_page]
+        mock_get_client.return_value = mock_client
+
+        from paper_search.retrieval.openalex import get_work_citations
+
+        papers = get_work_citations("W999", per_page=20)
+
+        self.assertEqual(len(papers), 2)
+        self.assertEqual(mock_client.get.call_count, 2)
+        first_url = mock_client.get.call_args_list[0].args[0]
+        second_url = mock_client.get.call_args_list[1].args[0]
+        first_params = parse_qs(urlparse(first_url).query)
+        second_params = parse_qs(urlparse(second_url).query)
+        self.assertEqual(first_params["cursor"][0], "*")
+        self.assertEqual(second_params["cursor"][0], "cursor-2")
+
+
+class TestDblpRetries(unittest.TestCase):
+    @patch("paper_search.retrieval.dblp.time.sleep")
+    @patch("paper_search.retrieval.dblp.get_shared_http_client")
+    def test_search_dblp_uses_retry_after_for_429(self, mock_get_client: MagicMock, mock_sleep: MagicMock) -> None:
+        rate_limited = MagicMock()
+        rate_limited.status_code = 429
+        rate_limited.headers = {"retry-after": "7"}
+        rate_limited.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "429",
+            request=MagicMock(),
+            response=rate_limited,
+        )
+
+        ok_response = MagicMock()
+        ok_response.status_code = 200
+        ok_response.raise_for_status.return_value = None
+        ok_response.json.return_value = {
+            "result": {
+                "hits": {
+                    "@total": "1",
+                    "hit": {
+                        "info": {
+                            "title": "A DBLP Test Paper",
+                            "authors": {"author": ["Alice"]},
+                            "year": "2024",
+                            "venue": "CVPR",
+                            "key": "conf/cvpr/test-paper",
+                        }
+                    },
+                }
+            }
+        }
+
+        mock_client = MagicMock()
+        mock_client.get.side_effect = [rate_limited, ok_response]
+        mock_get_client.return_value = mock_client
+
+        papers = search_dblp("test query")
+
+        self.assertEqual(len(papers), 1)
+        mock_sleep.assert_called_once_with(7.0)
+
 
 class TestLiveBackendIntegration(unittest.TestCase):
+    @patch.dict(
+        os.environ,
+        {
+            "SEARCH_SOURCE_ARXIV": "false",
+            "SEARCH_SOURCE_DBLP": "false",
+        },
+        clear=False,
+    )
     @patch("paper_search.retrieval.semantic_scholar.get_shared_http_client")
     @patch("paper_search.retrieval.openalex.get_shared_http_client")
     def test_retrieve_live_papers_semantic(self, mock_oa_client: MagicMock, mock_s2_client: MagicMock) -> None:
@@ -269,6 +401,14 @@ class TestLiveBackendIntegration(unittest.TestCase):
         self.assertGreater(len(papers), 0)
         self.assertIsInstance(papers[0], Paper)
 
+    @patch.dict(
+        os.environ,
+        {
+            "SEARCH_SOURCE_ARXIV": "false",
+            "SEARCH_SOURCE_DBLP": "false",
+        },
+        clear=False,
+    )
     @patch("paper_search.retrieval.semantic_scholar.get_shared_http_client")
     @patch("paper_search.retrieval.openalex.get_shared_http_client")
     def test_retrieve_live_papers_navigational(self, mock_oa_client: MagicMock, mock_s2_client: MagicMock) -> None:
@@ -292,6 +432,14 @@ class TestLiveBackendIntegration(unittest.TestCase):
         self.assertGreater(len(papers), 0)
         self.assertIsInstance(papers[0], Paper)
 
+    @patch.dict(
+        os.environ,
+        {
+            "SEARCH_SOURCE_ARXIV": "false",
+            "SEARCH_SOURCE_DBLP": "false",
+        },
+        clear=False,
+    )
     @patch("paper_search.retrieval.semantic_scholar.get_shared_http_client")
     @patch("paper_search.retrieval.openalex.get_shared_http_client")
     def test_api_payload_translation_consumed(self, mock_oa_client: MagicMock, mock_s2_client: MagicMock) -> None:
@@ -326,6 +474,14 @@ class TestLiveBackendIntegration(unittest.TestCase):
         s2_url = first_s2_call[0][0] if first_s2_call[0] else first_s2_call[1].get("url", "")
         self.assertIn("hallucination", s2_url)
 
+    @patch.dict(
+        os.environ,
+        {
+            "SEARCH_SOURCE_ARXIV": "false",
+            "SEARCH_SOURCE_DBLP": "false",
+        },
+        clear=False,
+    )
     @patch("paper_search.retrieval.semantic_scholar.get_shared_http_client")
     @patch("paper_search.retrieval.openalex.get_shared_http_client")
     def test_fallback_when_payload_empty(self, mock_oa_client: MagicMock, mock_s2_client: MagicMock) -> None:

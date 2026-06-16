@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlencode
@@ -15,6 +16,7 @@ from urllib.parse import urlencode
 import httpx
 
 from ..contracts import Paper
+from ..errors import ApiRateLimitError, classify_httpx_error, is_retryable
 from .shared import get_shared_http_client
 
 logger = logging.getLogger(__name__)
@@ -22,7 +24,9 @@ logger = logging.getLogger(__name__)
 DBLP_BASE_URL = "https://dblp.org/search/publ/api"
 
 MAX_RETRIES = 3
-RETRY_BACKOFF = 1.0
+RETRY_BACKOFF = 2.0
+DBLP_TIMEOUT = 20.0
+DBLP_DEFAULT_RETRY_AFTER = 10.0
 
 
 def search_dblp(query: str, max_results: int = 20) -> list[Paper]:
@@ -54,16 +58,22 @@ def _request_with_retry(url: str) -> dict[str, Any]:
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             client = get_shared_http_client()
-            response = client.get(url, timeout=15.0)
+            response = client.get(url, timeout=DBLP_TIMEOUT)
             response.raise_for_status()
             return response.json()
         except (httpx.HTTPStatusError, httpx.RequestError) as e:
-            if attempt == MAX_RETRIES:
-                logger.warning("DBLP request failed after %d attempts: %s", MAX_RETRIES, e)
+            classified = classify_httpx_error(e)
+            if attempt == MAX_RETRIES or not is_retryable(classified):
+                logger.warning("DBLP request failed after %d attempts: %s", MAX_RETRIES, classified)
                 return {}
-            wait = RETRY_BACKOFF * attempt
-            logger.warning("DBLP retry %d/%d after error: %s", attempt, MAX_RETRIES, e)
-            import time
+
+            if isinstance(classified, ApiRateLimitError):
+                retry_after = classified.retry_after or DBLP_DEFAULT_RETRY_AFTER
+                wait = max(retry_after, RETRY_BACKOFF * attempt)
+            else:
+                wait = RETRY_BACKOFF * attempt
+
+            logger.warning("DBLP retry %d/%d after error: %s", attempt, MAX_RETRIES, classified)
             time.sleep(wait)
     return {}
 

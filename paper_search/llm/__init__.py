@@ -5,6 +5,8 @@ import os
 import threading
 from typing import Any, Literal
 
+from langchain_core.callbacks import BaseCallbackHandler
+
 logger = logging.getLogger(__name__)
 
 
@@ -13,7 +15,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class TokenUsageCallback:
+class TokenUsageCallback(BaseCallbackHandler):
     """LangChain callback handler that tracks prompt/completion token usage.
 
     修复 token_usage 全 0：所有 LLM 调用自动通过此 callback 记录 token 用量，

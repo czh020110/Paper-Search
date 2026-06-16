@@ -83,22 +83,75 @@
   "api_payload_translation": {
     "semantic_scholar": [
       {
-        "query": "hallucination reinforcement learning vision-language model",
-        "year": "2022-"
+        "query": "hallucination mitigation in large language models using reinforcement learning",
+        "year": "2022-",
+        "venue": "CVPR",
+        "fields_of_study": "Computer Science",
+        "min_citation_count": null,
+        "publication_types": "Conference",
+        "open_access_pdf": null,
+        "sort": "citationCount:desc",
+        "limit": 20
       },
       {
-        "query": "object hallucination RLHF multimodal model",
-        "year": "2022-"
+        "query": "object hallucination RLHF vision-language model",
+        "year": "2022-",
+        "venue": null,
+        "fields_of_study": null,
+        "min_citation_count": null,
+        "publication_types": null,
+        "open_access_pdf": null,
+        "sort": null,
+        "limit": 20
       }
     ],
     "openalex": [
       {
         "search": "hallucination control reinforcement learning",
-        "filter": "publication_year:>2021"
+        "filter": {
+          "from_publication_date": "2022-01-01",
+          "publication_year": null,
+          "to_publication_date": null,
+          "primary_location_source_id": null,
+          "authorships_author_id": null,
+          "topics_id": null,
+          "type": "article",
+          "is_oa": null,
+          "has_abstract": true,
+          "language": null,
+          "cited_by_count": null
+        },
+        "sort": "relevance_score:desc",
+        "per_page": 25
       },
       {
         "search": "object hallucination reward model",
-        "filter": "publication_year:>2021"
+        "filter": {
+          "from_publication_date": "2022-01-01",
+          "publication_year": null,
+          "to_publication_date": null,
+          "primary_location_source_id": null,
+          "authorships_author_id": null,
+          "topics_id": null,
+          "type": null,
+          "is_oa": null,
+          "has_abstract": null,
+          "language": null,
+          "cited_by_count": null
+        },
+        "sort": null,
+        "per_page": 25
+      }
+    ],
+    "arxiv": [
+      {
+        "search_query": "ti:hallucination AND abs:reinforcement learning AND cat:cs.CV",
+        "submitted_date_from": "20220101",
+        "submitted_date_to": null,
+        "category": "cs.CV",
+        "sort_by": "relevance",
+        "sort_order": "descending",
+        "max_results": 20
       }
     ]
   }
@@ -111,7 +164,7 @@
 - **semantic（语义型）**：用户想找某类方法、主题或领域的论文，没有锁定具体篇目（例如"关于大模型幻觉控制的论文"）。此类型走多角度语义扩展检索路径，子查询覆盖不同关键词组合和角度。
 - **metadata（结构化过滤型）**：用户给出了明确的结构化约束（例如年份、会议、作者、领域等）。此类型优先消费 `api_payload_translation` 中的结构化过滤参数，将硬约束直接翻译为各 API 原生过滤条件。
 
-4. 模块二:初检索, 初次检索不再只使用单条 query 获取 10 篇"种子文献"，而是直接从 `api_payload_translation` 中取 S2 和 OA 各自独立的搜索 payload 分别调用 API。**S2 和 OA 各自独立生成搜索策略，数量和策略可不一致**：S2 偏向语义长句 + 结构化过滤（venue、year、minCitationCount），OA 偏向 BM25 关键词句子 + filter 字段（from_publication_date、type）。`sub_queries_for_retrieval` 仅作为搜索意图摘要，供 Reranker、滚雪球和结果展示使用，不直接作为 API 搜索词。初检索阶段优先保证召回，坏种子交由后续粗筛、Reranker 与 LLM 精筛收口；完成后记录最小 golden set 的召回情况、API 调用数和耗时。与此同时，初检索不再对所有查询使用同一条检索路径，而是根据 `intent_analysis.query_type` 选择不同策略：`navigational` 优先走标题精确匹配路径，`semantic` 优先走多角度语义扩展检索路径，`metadata` 优先消费 `api_payload_translation` 中的结构化过滤参数。
+4. 模块二:初检索, 初次检索不再只使用单条 query 获取 10 篇"种子文献"，而是直接从 `api_payload_translation` 中取 S2、OA 和 arXiv 各自独立的搜索 payload 分别调用 API。**S2、OA 和 arXiv 各自独立生成搜索策略，数量和策略可不一致**：S2 偏向语义长句 + 结构化过滤（venue、fieldsOfStudy、minCitationCount 等），OA 偏向 BM25 关键词句子 + 结构化 filter（OAFilterSchema：from_publication_date、type 等），arXiv 偏向字段前缀搜索（ti:/abs:/cat:/au: + AND/OR/ANDNOT）+ submittedDate 时间过滤 + category 分类筛选。`sub_queries_for_retrieval` 仅作为搜索意图摘要，供 Reranker、滚雪球和结果展示使用，不直接作为 API 搜索词。初检索阶段优先保证召回，坏种子交由后续粗筛、Reranker 与 LLM 精筛收口；完成后记录最小 golden set 的召回情况、API 调用数和耗时。与此同时，初检索不再对所有查询使用同一条检索路径，而是根据 `intent_analysis.query_type` 选择不同策略：`navigational` 优先走标题精确匹配路径，`semantic` 优先走多角度语义扩展检索路径，`metadata` 优先消费 `api_payload_translation` 中的结构化过滤参数。
 
 5. 模块三：滚雪球模块 — 在精筛完成后，基于 LLM 判定为”高度相关”的论文自动扩展检索范围。  
    在精筛完成后执行（此时论文已有 LLM 相关性判定），调用 `run_snowball()` 通过 LangGraph StateGraph 迭代执行四个节点：  

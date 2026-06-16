@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
@@ -23,6 +24,9 @@ OA_BASE_URL = "https://api.openalex.org"
 
 MAX_RETRIES = 3
 RETRY_BACKOFF = 2.0
+OA_TIMEOUT = 20.0
+_TITLE_SEARCH_MAX_CHARS = 120
+_TITLE_SEARCH_MAX_WORDS = 16
 
 
 def build_oa_filter_string(f: "OAFilterSchema") -> str | None:
@@ -75,57 +79,55 @@ def search_works(
     oa_filter: "OAFilterSchema | None" = None,
     sort: str | None = None,
 ) -> list[Paper]:
-    papers: list[Paper] = []
-    cursor = "*"
-    while cursor:
-        params: dict[str, Any] = _build_common_params(per_page)
-        params["cursor"] = cursor
+    """Search OpenAlex works and return at most one page of results.
 
-        # search parameter
-        if query:
-            params["search"] = query
+    In this project, ``per_page`` is treated as the total result budget per OA
+    query, not the page size for unbounded cursor traversal. Full cursor walks on
+    search endpoints inflate the seed pool far beyond the intended 30-50 range and
+    make the live pipeline unstable.
+    """
+    params: dict[str, Any] = _build_common_params(per_page)
 
-        # filter parameter — merge structured filter with year_from fallback
-        filter_parts: list[str] = []
-        if oa_filter:
-            structured = build_oa_filter_string(oa_filter)
-            if structured:
-                filter_parts.append(structured)
-        if year_from is not None and not (oa_filter and oa_filter.publication_year):
-            filter_parts.append(f"publication_year:>{year_from - 1}")
-        if filter_parts:
-            params["filter"] = ",".join(filter_parts)
+    # search parameter
+    if query:
+        params["search"] = query
 
-        # sort parameter
-        if sort:
-            params["sort"] = sort
+    # filter parameter — merge structured filter with year_from fallback
+    filter_parts: list[str] = []
+    if oa_filter:
+        structured = build_oa_filter_string(oa_filter)
+        if structured:
+            filter_parts.append(structured)
+    if year_from is not None and not (oa_filter and oa_filter.publication_year):
+        filter_parts.append(f"publication_year:>{year_from - 1}")
+    if filter_parts:
+        params["filter"] = ",".join(filter_parts)
 
-        url = f"{OA_BASE_URL}/works?{urlencode(params, doseq=True)}"
-        payload = _request_with_retry(url, cache=cache)
-        raw_works = cast(list[dict[str, Any]], payload.get("results") or [])
-        papers.extend(_paper_from_oa(item) for item in raw_works)
-        cursor = cast(str | None, payload.get("meta", {}).get("cursor"))
-        if not cursor or len(raw_works) == 0:
-            break
-    return papers
+    # sort parameter
+    if sort:
+        params["sort"] = sort
+
+    url = f"{OA_BASE_URL}/works?{urlencode(params, doseq=True)}"
+    payload = _request_with_retry(url, cache=cache)
+    raw_works = cast(list[dict[str, Any]], payload.get("results") or [])
+    return [_paper_from_oa(item) for item in raw_works]
 
 
 def search_works_by_title(title: str, per_page: int = 10, cache: CacheStore | None = None) -> list[Paper]:
-    papers: list[Paper] = []
-    cursor = "*"
-    while cursor:
-        params: dict[str, Any] = _build_common_params(per_page)
-        params["search"] = title
-        params["cursor"] = cursor
+    """Search OpenAlex by title-like text and return at most one page of results.
 
-        url = f"{OA_BASE_URL}/works?{urlencode(params, doseq=True)}"
-        payload = _request_with_retry(url, cache=cache)
-        raw_works = cast(list[dict[str, Any]], payload.get("results") or [])
-        papers.extend(_paper_from_oa(item) for item in raw_works)
-        cursor = cast(str | None, payload.get("meta", {}).get("cursor"))
-        if not cursor or len(raw_works) == 0:
-            break
-    return papers
+    Enrichment only needs a small candidate set for exact normalized-title matching.
+    Walking `next_cursor` here inflates runtime and raises the chance of provider
+    timeouts without improving the final match quality.
+    """
+    search_query = _sanitize_title_search(title)
+    params: dict[str, Any] = _build_common_params(per_page)
+    params["search"] = search_query
+
+    url = f"{OA_BASE_URL}/works?{urlencode(params, doseq=True)}"
+    payload = _request_with_retry(url, cache=cache)
+    raw_works = cast(list[dict[str, Any]], payload.get("results") or [])
+    return [_paper_from_oa(item) for item in raw_works]
 
 
 def get_work_citations(openalex_id: str, cache: CacheStore | None = None, per_page: int = 20) -> list[Paper]:
@@ -143,7 +145,7 @@ def get_work_citations(openalex_id: str, cache: CacheStore | None = None, per_pa
         payload = _request_with_retry(url, cache=cache)
         raw = cast(list[dict[str, Any]], payload.get("results") or [])
         papers.extend(_paper_from_oa(item) for item in raw)
-        cursor = cast(str | None, payload.get("meta", {}).get("cursor"))
+        cursor = cast(str | None, payload.get("meta", {}).get("next_cursor"))
         if not cursor or len(raw) == 0:
             break
     return papers
@@ -183,6 +185,29 @@ def get_work_references(openalex_id: str, cache: CacheStore | None = None, per_p
     return [_paper_from_oa(item) for item in raw]
 
 
+def _sanitize_title_search(title: str) -> str:
+    """Normalize title text for OpenAlex `search=` queries.
+
+    Keeps the title recognizable for enrichment matching, while dropping some
+    punctuation noise and enforcing a shorter prefix for long titles so the
+    fallback OA title lookup stays within a conservative query envelope.
+    """
+    cleaned = " ".join(title.replace("\n", " ").split())
+    cleaned = cleaned.replace("–", "-").replace("—", "-")
+    cleaned = re.sub(r"[^\w\s\-\?]", " ", cleaned)
+    cleaned = " ".join(cleaned.split())
+
+    words = cleaned.split()
+    if len(words) > _TITLE_SEARCH_MAX_WORDS:
+        cleaned = " ".join(words[:_TITLE_SEARCH_MAX_WORDS])
+
+    if len(cleaned) <= _TITLE_SEARCH_MAX_CHARS:
+        return cleaned
+
+    truncated = cleaned[:_TITLE_SEARCH_MAX_CHARS].rsplit(" ", 1)[0].strip()
+    return truncated or cleaned[:_TITLE_SEARCH_MAX_CHARS].strip()
+
+
 def _request_with_retry(url: str, cache: CacheStore | None = None) -> dict[str, Any]:
     if cache is not None:
         cached_body = cache.get("api_responses", url)
@@ -193,7 +218,7 @@ def _request_with_retry(url: str, cache: CacheStore | None = None) -> dict[str, 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             client = get_shared_http_client()
-            response = client.get(url, timeout=30.0)
+            response = client.get(url, timeout=OA_TIMEOUT)
             if response.status_code == 429:
                 wait = RETRY_BACKOFF * attempt
                 logger.warning("OA rate limited (429), retrying in %.1fs (attempt %d/%d)", wait, attempt, MAX_RETRIES)

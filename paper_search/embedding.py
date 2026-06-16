@@ -45,12 +45,11 @@ def get_embedding(text: str) -> list[float] | None:
 
 
 def batch_embeddings(texts: list[str]) -> list[list[float] | None]:
-    """Return embedding vectors for a batch of texts via true batch API calls.
+    """Return embedding vectors for a batch of texts via provider-native batch APIs.
 
-    修复：将原来的逐条并发调用改为真正的 batch API 调用。
-    DashScope TextEmbedding.call 原生支持 input=list[str] 批量提交；
-    SiliconFlow OpenAI-compatible API 支持 input=list[str] 批量提交。
-    每批最多 25 条，超出部分自动分批。
+    DashScope TextEmbedding.call 原生支持 input=list[str] 批量提交，但
+    text-embedding-v4 同步接口单次最多 10 条；SiliconFlow OpenAI-compatible
+    API 也支持 input=list[str] 批量提交。各 provider 在内部按自己的上限分批。
     """
     provider = os.getenv("EMBEDDING_PROVIDER", "")
     if not provider:
@@ -180,15 +179,15 @@ def _dashscope_concurrent_embed(texts: list[str]) -> list[list[float] | None]:
     return results
 
 
-# 修复：DashScope 真正的 batch API 调用（每批最多 25 条）
-_DASHSCOPE_BATCH_SIZE = 25
+# DashScope text-embedding-v4 synchronous API accepts at most 10 texts per call.
+_DASHSCOPE_BATCH_SIZE = 10
 
 
 def _dashscope_batch_embed(texts: list[str]) -> list[list[float] | None]:
     """使用 DashScope TextEmbedding.call 的原生 batch 模式嵌入文本。
 
-    修复：每批最多 25 条同时提交，减少 API 调用次数。
-    DashScope TextEmbedding.call 的 input 参数原生支持 list[str]。
+    text-embedding-v4 同步接口单次最多接受 10 条文本，超出时必须在客户端分批。
+    多模态模型仍保持逐条调用，因为其 API 不支持当前这类文本 batch 模式。
     """
     import dashscope
     from http import HTTPStatus
@@ -211,7 +210,7 @@ def _dashscope_batch_embed(texts: list[str]) -> list[list[float] | None]:
                     try:
                         resp = dashscope.MultiModalEmbedding.call(
                             model=model,
-                            input=[{"text": text}],
+                            input=[{"text": text}],  # type: ignore[arg-type]
                             api_key=api_key,
                         )
                         if resp.status_code == HTTPStatus.OK:
@@ -316,9 +315,10 @@ _SILICONFLOW_BATCH_SIZE = 25
 def _siliconflow_batch_embed(texts: list[str]) -> list[list[float] | None]:
     """使用 SiliconFlow OpenAI-compatible API 的 batch 模式嵌入文本。
 
-    修复：每批最多 25 条同时提交，减少 API 调用次数。
-    SiliconFlow embedding API 的 input 参数原生支持 list[str]。
+    维持现有 25 条分批策略，减少请求次数；provider 原生支持 `input=list[str]`。
     """
+    import httpx
+
     api_key = os.getenv("EMBEDDING_API_KEY")
     model = os.getenv("EMBEDDING_MODEL", "BAAI/bge-large-zh-v1.5")
     if not api_key:

@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 S2_DELAY_SECONDS = 1.0
 # DBLP has no API key and strict rate-limiting (HTTP 429) — must run sequentially with delay.
 # arXiv can handle moderate concurrency (5 queries tested OK), so runs in parallel.
-DBLP_DELAY_SECONDS = 1.0
+DBLP_DELAY_SECONDS = 1.5
 
 # Chinese tokens that should be stripped from API queries (APIs index English papers)
 _CJK_PATTERN = re.compile(r"[一-鿿㐀-䶿]+")
