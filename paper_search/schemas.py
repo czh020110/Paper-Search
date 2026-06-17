@@ -13,9 +13,9 @@ The prompt should only handle cross-field rules that Pydantic cannot express
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 if TYPE_CHECKING:
     from .contracts import QueryPlan
@@ -156,7 +156,9 @@ class S2PayloadSchema(BaseModel):
         default=None,
         description=(
             "Comma-separated fields of study, e.g. 'Computer Science,Artificial Intelligence'. "
-            "Maps to S2 fieldsOfStudy parameter."
+            "If the model naturally thinks in arrays, a list like ['Computer Science', "
+            "'Artificial Intelligence'] is also acceptable and will be normalized to a "
+            "comma-separated string. Maps to S2 fieldsOfStudy parameter."
         ),
     )
     publication_types: str | None = Field(
@@ -187,6 +189,14 @@ class S2PayloadSchema(BaseModel):
         le=1000,
         description="Maximum number of results (max 1000).",
     )
+
+    @field_validator("fields_of_study", mode="before")
+    @classmethod
+    def _normalize_fields_of_study(cls, value: Any) -> Any:
+        if isinstance(value, list):
+            parts = [str(item).strip() for item in value if str(item).strip()]
+            return ",".join(parts) or None
+        return value
 
 
 class OAFilterSchema(BaseModel):

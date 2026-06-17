@@ -13,7 +13,14 @@ import httpx
 from paper_search.contracts import IntentAnalysis, Paper, QueryPlan
 from paper_search.retrieval.dblp import search_dblp
 from paper_search.retrieval.live_backend import retrieve_live_papers
-from paper_search.retrieval.openalex import _paper_from_oa, _reconstruct_abstract, search_works, search_works_by_title
+from paper_search.retrieval.openalex import (
+    _paper_from_oa,
+    _reconstruct_abstract,
+    get_work_by_doi,
+    search_works,
+    search_works_by_exact_title,
+    search_works_by_title,
+)
 from paper_search.retrieval.semantic_scholar import _paper_from_s2, search_papers
 
 
@@ -250,6 +257,24 @@ class TestOpenAlexParser(unittest.TestCase):
         mock_client.get.assert_called_once()
 
     @patch("paper_search.retrieval.openalex.get_shared_http_client")
+    def test_search_works_uses_api_key_without_mailto(self, mock_get_client: MagicMock) -> None:
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = OA_SEARCH_RESPONSE
+        mock_client = MagicMock()
+        mock_client.get.return_value = mock_response
+        mock_get_client.return_value = mock_client
+
+        with patch.dict(os.environ, {"OPENALEX_API_KEY": "oa-key", "OPENALEX_MAILTO": "deprecated@example.com"}, clear=False):
+            search_works(query="vision transformer", year_from=2023, per_page=25)
+
+        called_url = mock_client.get.call_args.args[0]
+        params = parse_qs(urlparse(called_url).query)
+        self.assertEqual(params["api_key"][0], "oa-key")
+        self.assertNotIn("mailto", params)
+        self.assertIn("select", params)
+
+    @patch("paper_search.retrieval.openalex.get_shared_http_client")
     def test_search_works_respects_single_page_budget(self, mock_get_client: MagicMock) -> None:
         first_page = MagicMock()
         first_page.status_code = 200
@@ -265,6 +290,23 @@ class TestOpenAlexParser(unittest.TestCase):
 
         self.assertEqual(len(papers), 1)
         mock_client.get.assert_called_once()
+
+    @patch("paper_search.retrieval.openalex.get_shared_http_client")
+    def test_search_works_by_exact_title_uses_search_exact(self, mock_get_client: MagicMock) -> None:
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"meta": {"count": 1}, "results": [OA_SEARCH_RESPONSE["results"][0]]}
+        mock_client = MagicMock()
+        mock_client.get.return_value = mock_response
+        mock_get_client.return_value = mock_client
+
+        papers = search_works_by_exact_title("Vision Transformers for Image Recognition", per_page=3)
+
+        self.assertEqual(len(papers), 1)
+        called_url = mock_client.get.call_args.args[0]
+        params = parse_qs(urlparse(called_url).query)
+        self.assertIn("search.exact", params)
+        self.assertNotIn("search", params)
 
     @patch("paper_search.retrieval.openalex.get_shared_http_client")
     def test_search_works_by_title_truncates_long_query(self, mock_get_client: MagicMock) -> None:
@@ -293,6 +335,23 @@ class TestOpenAlexParser(unittest.TestCase):
         first_search = first_params["search"][0]
         self.assertLessEqual(len(first_search), 120)
         self.assertLessEqual(len(first_search.split()), 16)
+
+    @patch("paper_search.retrieval.openalex.get_shared_http_client")
+    def test_get_work_by_doi_uses_singleton_lookup(self, mock_get_client: MagicMock) -> None:
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = OA_SEARCH_RESPONSE["results"][0]
+        mock_client = MagicMock()
+        mock_client.get.return_value = mock_response
+        mock_get_client.return_value = mock_client
+
+        paper = get_work_by_doi("10.5678/oa-test")
+
+        self.assertIsNotNone(paper)
+        called_url = mock_client.get.call_args.args[0]
+        self.assertIn("/works/doi:10.5678%2Foa-test", called_url)
+        params = parse_qs(urlparse(called_url).query)
+        self.assertIn("select", params)
 
     @patch("paper_search.retrieval.openalex.get_shared_http_client")
     def test_get_work_citations_uses_next_cursor(self, mock_get_client: MagicMock) -> None:

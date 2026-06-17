@@ -26,6 +26,9 @@ You are an expert academic research assistant. Given a natural language query ab
    - Bad: "how to mitigate hallucination in large language models using reinforcement learning" — too semantic/natural-language for BM25.
    - Bad: "hallucination reinforcement learning" — too few keywords, too broad (unless the query really only has 2 concepts).
    - Use exact phrases for compound terms: '"object hallucination"'.
+   - IMPORTANT: do NOT use SQL/Lucene/Boolean syntax such as `OR`, `AND`, `NOT`, parentheses, or query-language operators in OpenAlex `search` strings. OpenAlex `search` should stay a plain keyword sentence.
+   - Prefer the most literal surface terms from the user query over abstract security synonyms. Example: if the query says "classical Chinese" or "文言文", keep "classical Chinese" in `search` instead of replacing it with generic terms like `multilingual`, `security vulnerability`, or `red teaming` unless those concepts are explicitly central to the query.
+   - Keep OpenAlex `sort` within values OpenAlex actually accepts, such as `relevance_score:desc`, `cited_by_count:desc`, or `publication_date:desc`. Never emit Semantic Scholar style `citationCount:desc` or snake/camel mismatches like `citation_count:desc`.
    - Use `filter` fields for year and type precision. For venue filtering, include the venue name in `search` — do NOT use `primary_location_source_id` unless you KNOW the exact OpenAlex source ID (do NOT guess or fabricate IDs).
    - Strategy: generate 1-3 payloads covering different search angles.
 

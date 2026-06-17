@@ -6,7 +6,7 @@ import re
 import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -24,9 +24,26 @@ OA_BASE_URL = "https://api.openalex.org"
 
 MAX_RETRIES = 3
 RETRY_BACKOFF = 2.0
-OA_TIMEOUT = 20.0
+OA_TIMEOUT = 30.0
 _TITLE_SEARCH_MAX_CHARS = 120
 _TITLE_SEARCH_MAX_WORDS = 16
+_OA_SELECT_FIELDS = ",".join([
+    "id",
+    "ids",
+    "title",
+    "display_name",
+    "publication_year",
+    "publication_date",
+    "cited_by_count",
+    "referenced_works_count",
+    "authorships",
+    "primary_location",
+    "open_access",
+    "topics",
+    "concepts",
+    "abstract_inverted_index",
+    "referenced_works",
+])
 
 
 def build_oa_filter_string(f: "OAFilterSchema") -> str | None:
@@ -57,17 +74,16 @@ def build_oa_filter_string(f: "OAFilterSchema") -> str | None:
     return ",".join(parts) if parts else None
 
 
-def _build_common_params(per_page: int | None = None) -> dict[str, Any]:
-    """Build params dict with mailto and api_key from env vars."""
+def _build_common_params(per_page: int | None = None, *, select: str | None = _OA_SELECT_FIELDS) -> dict[str, Any]:
+    """Build params dict with api_key from env vars."""
     params: dict[str, Any] = {}
-    mailto = os.getenv("OPENALEX_MAILTO")
-    if mailto:
-        params["mailto"] = mailto
     api_key = os.getenv("OPENALEX_API_KEY")
     if api_key:
         params["api_key"] = api_key
     if per_page is not None:
         params["per_page"] = per_page
+    if select:
+        params["select"] = select
     return params
 
 
@@ -116,9 +132,8 @@ def search_works(
 def search_works_by_title(title: str, per_page: int = 10, cache: CacheStore | None = None) -> list[Paper]:
     """Search OpenAlex by title-like text and return at most one page of results.
 
-    Enrichment only needs a small candidate set for exact normalized-title matching.
-    Walking `next_cursor` here inflates runtime and raises the chance of provider
-    timeouts without improving the final match quality.
+    This helper remains for broader title search paths such as navigational
+    retrieval. Enrichment should prefer DOI lookup or exact-title search.
     """
     search_query = _sanitize_title_search(title)
     params: dict[str, Any] = _build_common_params(per_page)
@@ -128,6 +143,32 @@ def search_works_by_title(title: str, per_page: int = 10, cache: CacheStore | No
     payload = _request_with_retry(url, cache=cache)
     raw_works = cast(list[dict[str, Any]], payload.get("results") or [])
     return [_paper_from_oa(item) for item in raw_works]
+
+
+def search_works_by_exact_title(title: str, per_page: int = 5, cache: CacheStore | None = None) -> list[Paper]:
+    """Search OpenAlex using `search.exact` for exact title matching."""
+    exact_title = _normalize_exact_title(title)
+    params: dict[str, Any] = _build_common_params(per_page)
+    params["search.exact"] = exact_title
+
+    url = f"{OA_BASE_URL}/works?{urlencode(params, doseq=True)}"
+    payload = _request_with_retry(url, cache=cache)
+    raw_works = cast(list[dict[str, Any]], payload.get("results") or [])
+    return [_paper_from_oa(item) for item in raw_works]
+
+
+def get_work_by_doi(doi: str, cache: CacheStore | None = None) -> Paper | None:
+    """Fetch a single OpenAlex work by DOI."""
+    normalized_doi = _normalize_doi(doi)
+    if not normalized_doi:
+        return None
+
+    params = _build_common_params(select=_OA_SELECT_FIELDS)
+    work_url = f"{OA_BASE_URL}/works/doi:{quote(normalized_doi, safe='')}?{urlencode(params)}"
+    payload = _request_with_retry(work_url, cache=cache)
+    if not payload:
+        return None
+    return _paper_from_oa(cast(dict[str, Any], payload))
 
 
 def get_work_citations(openalex_id: str, cache: CacheStore | None = None, per_page: int = 20) -> list[Paper]:
@@ -188,9 +229,8 @@ def get_work_references(openalex_id: str, cache: CacheStore | None = None, per_p
 def _sanitize_title_search(title: str) -> str:
     """Normalize title text for OpenAlex `search=` queries.
 
-    Keeps the title recognizable for enrichment matching, while dropping some
-    punctuation noise and enforcing a shorter prefix for long titles so the
-    fallback OA title lookup stays within a conservative query envelope.
+    Keeps the title recognizable for broader title lookup while dropping some
+    punctuation noise and enforcing a shorter prefix for long titles.
     """
     cleaned = " ".join(title.replace("\n", " ").split())
     cleaned = cleaned.replace("–", "-").replace("—", "-")
@@ -206,6 +246,12 @@ def _sanitize_title_search(title: str) -> str:
 
     truncated = cleaned[:_TITLE_SEARCH_MAX_CHARS].rsplit(" ", 1)[0].strip()
     return truncated or cleaned[:_TITLE_SEARCH_MAX_CHARS].strip()
+
+
+def _normalize_exact_title(title: str) -> str:
+    """Normalize a title for exact-title OpenAlex lookup without aggressive truncation."""
+    cleaned = " ".join(title.replace("\n", " ").split())
+    return cleaned.replace("–", "-").replace("—", "-").strip()
 
 
 def _request_with_retry(url: str, cache: CacheStore | None = None) -> dict[str, Any]:

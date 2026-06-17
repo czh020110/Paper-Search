@@ -89,18 +89,40 @@ def _try_enrich_from_s2(paper: Paper, cache: CacheStore | None = None) -> None:
 
 
 def _try_enrich_from_oa(paper: Paper, cache: CacheStore | None = None) -> None:
-    """Search OA by title and backfill missing fields if a match is found."""
-    from .openalex import search_works_by_title
+    """Search OA by DOI or exact title and backfill missing fields if a match is found."""
+    from .openalex import get_work_by_doi, search_works_by_exact_title, search_works_by_title
+
+    doi = paper.source_ids.get("doi")
+    if doi:
+        try:
+            by_doi = get_work_by_doi(doi, cache=cache)
+        except Exception:
+            logger.debug("OA enrichment DOI lookup failed for: %s", paper.title[:60])
+        else:
+            if by_doi is not None:
+                _backfill(paper, by_doi, source_label="openalex")
+                return
 
     try:
-        results = search_works_by_title(paper.title, per_page=3, cache=cache)
+        results = search_works_by_exact_title(paper.title, per_page=3, cache=cache)
     except Exception:
-        logger.debug("OA enrichment search failed for: %s", paper.title[:60])
-        return
+        logger.debug("OA exact-title enrichment failed for: %s", paper.title[:60])
+        results = []
 
     match = _find_title_match(paper.title, results)
     if match:
         _backfill(paper, match, source_label="openalex")
+        return
+
+    try:
+        fallback_results = search_works_by_title(paper.title, per_page=3, cache=cache)
+    except Exception:
+        logger.debug("OA fallback title search failed for: %s", paper.title[:60])
+        return
+
+    fallback_match = _find_title_match(paper.title, fallback_results)
+    if fallback_match:
+        _backfill(paper, fallback_match, source_label="openalex")
 
 
 def _find_title_match(original_title: str, candidates: list[Paper]) -> Paper | None:

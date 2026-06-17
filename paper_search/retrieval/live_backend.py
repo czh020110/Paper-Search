@@ -350,7 +350,7 @@ def _parse_oa_payload(
         q = None
 
     # sort
-    sort = entry.get("sort")
+    sort = _normalize_oa_sort(entry.get("sort"))
 
     # per_page
     per_page = entry.get("per_page", 25)
@@ -418,6 +418,18 @@ def _oa_normalize_year(raw: str) -> str:
     if m:
         return f">{int(m.group(1)) - 1}"
     return raw
+
+
+def _normalize_oa_sort(raw: Any) -> str | None:
+    """Normalize OA sort values to the field names OpenAlex accepts."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    sort = raw.strip()
+    mapping = {
+        "citation_count:desc": "cited_by_count:desc",
+        "citation_count:asc": "cited_by_count:asc",
+    }
+    return mapping.get(sort, sort)
 
 
 def _parse_s2_payload(entry: dict[str, Any], default_year_from: int | None) -> "S2PayloadSchema | None":
